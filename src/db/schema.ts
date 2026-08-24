@@ -141,6 +141,18 @@ export const workspaceResumeStates = sqliteTable(
   (table) => [index("workspace_resume_state_updated_idx").on(table.updatedAt)],
 );
 
+export const workspaceTodos = sqliteTable(
+  "workspace_todos",
+  {
+    workspaceKey: text("workspace_key").primaryKey(),
+    root: text("root").notNull(),
+    mode: text("mode").notNull(),
+    todosJson: text("todos_json").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("workspace_todos_updated_idx").on(table.updatedAt)],
+);
+
 export const workspaceCheckpoints = sqliteTable(
   "workspace_checkpoints",
   {
@@ -195,6 +207,8 @@ export type ConsoleSettingRow = typeof consoleSettings.$inferSelect;
 export type NewConsoleSettingRow = typeof consoleSettings.$inferInsert;
 export type WorkspaceResumeStateRow = typeof workspaceResumeStates.$inferSelect;
 export type NewWorkspaceResumeStateRow = typeof workspaceResumeStates.$inferInsert;
+export type WorkspaceTodoRow = typeof workspaceTodos.$inferSelect;
+export type NewWorkspaceTodoRow = typeof workspaceTodos.$inferInsert;
 export type WorkspaceCheckpointRow = typeof workspaceCheckpoints.$inferSelect;
 export type NewWorkspaceCheckpointRow = typeof workspaceCheckpoints.$inferInsert;
 export type LocalAgentSessionRow = typeof localAgentSessions.$inferSelect;

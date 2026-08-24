@@ -52,6 +52,11 @@ const migrations: Migration[] = [
     name: "workspace-memory",
     up: migrateWorkspaceMemory,
   },
+  {
+    version: 10,
+    name: "workspace-todos",
+    up: migrateWorkspaceTodos,
+  },
 ];
 
 export function migrateDatabase(sqlite: Database.Database): void {
@@ -285,6 +290,21 @@ function migrateWorkspaceMemory(sqlite: Database.Database): void {
 
     create index if not exists workspace_checkpoints_workspace_created_idx
       on workspace_checkpoints(workspace_key, created_at desc);
+  `);
+}
+
+function migrateWorkspaceTodos(sqlite: Database.Database): void {
+  sqlite.exec(`
+    create table if not exists workspace_todos (
+      workspace_key text primary key,
+      root text not null,
+      mode text not null,
+      todos_json text not null,
+      updated_at text not null
+    );
+
+    create index if not exists workspace_todos_updated_idx
+      on workspace_todos(updated_at desc);
   `);
 }
 

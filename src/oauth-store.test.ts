@@ -50,6 +50,7 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
       { version: 7, name: "console-event-favorites" },
       { version: 8, name: "console-event-ui-metadata" },
       { version: 9, name: "workspace-memory" },
+      { version: 10, name: "workspace-todos" },
     ]);
   } finally {
     database.close();

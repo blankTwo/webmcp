@@ -48,6 +48,52 @@ test("open_workspace keeps lifecycle flags out of model output", async (t) => {
   assert.equal("includeBootstrapContext" in repeatedStructured, false);
 });
 
+test("todo_write and todo_update persist a lightweight workspace checklist", async (t) => {
+  const context = await fixture(t);
+  const opened = await callOpen(context.client, context.project, "chat-todo");
+  const workspaceId = String(structuredContent(opened).workspaceId);
+
+  const written = await context.client.callTool({
+    name: "todo_write",
+    arguments: {
+      workspaceId,
+      todos: [
+        { content: "Inspect current implementation" },
+        { id: "todo-tests", content: "Run regression tests", status: "pending" },
+      ],
+    },
+  });
+  const writtenTodos = structuredContent(written).todos as Array<{
+    id: string;
+    content: string;
+    status: string;
+  }>;
+  assert.equal(writtenTodos.length, 2);
+  assert.equal(writtenTodos[0]?.status, "pending");
+  assert.equal(writtenTodos[1]?.id, "todo-tests");
+
+  const updated = await context.client.callTool({
+    name: "todo_update",
+    arguments: {
+      workspaceId,
+      id: "todo-tests",
+      status: "completed",
+    },
+  });
+  const updatedStructured = structuredContent(updated);
+  assert.equal((updatedStructured.todo as { status?: unknown }).status, "completed");
+
+  await context.close();
+
+  const restoredStore = new SqliteWorkspaceStore(context.stateDir);
+  const restoredRegistry = new WorkspaceRegistry(context.config, restoredStore);
+  const restored = await restoredRegistry.openWorkspace({ path: context.project, mode: "checkout" });
+  const restoredTodos = await restoredRegistry.getTodos(restored.workspace);
+  assert.equal(restoredTodos?.todos.length, 2);
+  assert.equal(restoredTodos?.todos.find((todo) => todo.id === "todo-tests")?.status, "completed");
+  restoredStore.close();
+});
+
 test("checkpoint restores continuation in a new conversation after server restart", async (t) => {
   const context = await fixture(t, { git: true });
   const first = await callOpen(context.client, context.project, "chat-a");

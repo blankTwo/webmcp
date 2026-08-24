@@ -4,6 +4,8 @@ import type {
   WorkspaceConversationBinding,
   WorkspaceMode,
   WorkspaceStore,
+  WorkspaceTodoItem,
+  WorkspaceTodoRecord,
 } from "./workspace-store.js";
 import type {
   WorkspaceCheckpointRecord,
@@ -338,6 +340,23 @@ export class WorkspaceRegistry {
   async getResumeState(workspace: Workspace): Promise<WorkspaceResumeRecord | undefined> {
     if (!this.store) return undefined;
     return this.store.getResumeState(await this.memoryKey(workspace));
+  }
+
+  async getTodos(workspace: Workspace): Promise<WorkspaceTodoRecord | undefined> {
+    if (!this.store) return undefined;
+    return this.store.getTodos(await this.memoryKey(workspace));
+  }
+
+  async saveTodos(workspace: Workspace, todos: WorkspaceTodoItem[]): Promise<WorkspaceTodoRecord> {
+    if (!this.store) {
+      throw new Error("Workspace persistence is unavailable; todo list cannot be saved.");
+    }
+    return this.store.saveTodos({
+      workspaceKey: await this.memoryKey(workspace),
+      root: workspace.root,
+      mode: workspace.mode,
+      todos,
+    });
   }
 
   async saveCheckpoint(

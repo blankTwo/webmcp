@@ -86,6 +86,18 @@ type Transport = StreamableHTTPServerTransport;
 const MCP_SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
 const MCP_SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1_000;
 const LEGACY_CHECKPOINT_PREFIX = "checkpoint";
+const workspaceTodoStatusSchema = z.enum(["pending", "in_progress", "completed"]);
+const workspaceTodoInputSchema = z.object({
+  id: z.string().min(1).optional(),
+  content: z.string().min(1),
+  status: workspaceTodoStatusSchema.optional(),
+});
+const workspaceTodoOutputSchema = z.object({
+  id: z.string(),
+  content: z.string(),
+  status: workspaceTodoStatusSchema,
+});
+
 const legacyCheckpointStateSchema = z.object({
   goal: z.string().min(1),
   currentTask: z.string().min(1),
@@ -1338,6 +1350,127 @@ export function createMcpServer(
             : {}),
           ...(continuation ? { continuation } : {}),
           instruction,
+        },
+      };
+    },
+  );
+
+  server.registerTool(
+    "todo_write",
+    {
+      title: "Write workspace todo list",
+      description:
+        "Create or replace the lightweight todo list for the current workspace. Use this to persist the model's current execution checklist. This is separate from checkpoints and is not a Goal system.",
+      inputSchema: {
+        workspaceId: z.string().describe(workspaceIdDescription),
+        todos: z.array(workspaceTodoInputSchema).max(100).describe("Complete todo list in execution order."),
+      },
+      outputSchema: resultOutputSchema({
+        todos: z.array(workspaceTodoOutputSchema),
+        updatedAt: z.string(),
+      }),
+      annotations: WRITE_TOOL_ANNOTATIONS,
+    },
+    async ({ workspaceId, todos }) => {
+      const startedAt = performance.now();
+      const workspace = workspaces.getWorkspace(workspaceId);
+      const ids = new Set<string>();
+      const normalizedTodos = todos.map((todo) => {
+        const id = todo.id?.trim() || randomUUID();
+        if (ids.has(id)) {
+          throw new Error(`Duplicate todo id: ${id}`);
+        }
+        ids.add(id);
+        return {
+          id,
+          content: todo.content.trim(),
+          status: todo.status ?? "pending" as const,
+        };
+      });
+      const saved = await workspaces.saveTodos(workspace, normalizedTodos);
+      const result = normalizedTodos.length === 0
+        ? "Cleared workspace todo list."
+        : `Saved ${normalizedTodos.length} workspace todo(s).`;
+      logToolCall(config, {
+        tool: "todo_write",
+        workspaceId,
+        path: workspace.root,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+        consoleUi: consoleToolUi("todo_write", {
+          workspaceId,
+          path: workspace.root,
+          todos: saved.todos,
+          summary: { count: saved.todos.length },
+        }),
+      });
+      return {
+        content: [textBlock(result)],
+        structuredContent: { result, todos: saved.todos, updatedAt: saved.updatedAt },
+      };
+    },
+  );
+
+  server.registerTool(
+    "todo_update",
+    {
+      title: "Update workspace todo",
+      description:
+        "Update one item in the workspace todo list by id. Use this as work starts or completes so the checklist remains current.",
+      inputSchema: {
+        workspaceId: z.string().describe(workspaceIdDescription),
+        id: z.string().min(1).describe("Todo id returned by todo_write."),
+        status: workspaceTodoStatusSchema.describe("New todo status."),
+        content: z.string().min(1).optional().describe("Optional replacement todo text."),
+      },
+      outputSchema: resultOutputSchema({
+        todo: workspaceTodoOutputSchema,
+        todos: z.array(workspaceTodoOutputSchema),
+        updatedAt: z.string(),
+      }),
+      annotations: WRITE_TOOL_ANNOTATIONS,
+    },
+    async ({ workspaceId, id, status, content }) => {
+      const startedAt = performance.now();
+      const workspace = workspaces.getWorkspace(workspaceId);
+      const current = await workspaces.getTodos(workspace);
+      if (!current) {
+        throw new Error("No todo list exists for this workspace. Call todo_write first.");
+      }
+      const index = current.todos.findIndex((todo) => todo.id === id);
+      if (index < 0) {
+        throw new Error(`Todo not found: ${id}`);
+      }
+      const updatedTodo = {
+        ...current.todos[index],
+        status,
+        ...(content !== undefined ? { content: content.trim() } : {}),
+      };
+      const todos = [...current.todos];
+      todos[index] = updatedTodo;
+      const saved = await workspaces.saveTodos(workspace, todos);
+      const result = `Updated todo ${id} to ${status}.`;
+      logToolCall(config, {
+        tool: "todo_update",
+        workspaceId,
+        path: workspace.root,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+        consoleUi: consoleToolUi("todo_update", {
+          workspaceId,
+          path: workspace.root,
+          todo: updatedTodo,
+          todos: saved.todos,
+          summary: { status },
+        }),
+      });
+      return {
+        content: [textBlock(result)],
+        structuredContent: {
+          result,
+          todo: updatedTodo,
+          todos: saved.todos,
+          updatedAt: saved.updatedAt,
         },
       };
     },

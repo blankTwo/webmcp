@@ -5,10 +5,12 @@ import {
   workspaceConversationBindings,
   workspaceResumeStates,
   workspaceSessions,
+  workspaceTodos,
   type WorkspaceCheckpointRow,
   type WorkspaceConversationBindingRow,
   type WorkspaceResumeStateRow,
   type WorkspaceSessionRow,
+  type WorkspaceTodoRow,
 } from "./db/schema.js";
 import type {
   WorkspaceCheckpointRecord,
@@ -38,6 +40,29 @@ export interface WorkspaceConversationBinding {
   workspaceSessionId: string;
   createdAt: string;
   lastUsedAt: string;
+}
+
+export type WorkspaceTodoStatus = "pending" | "in_progress" | "completed";
+
+export interface WorkspaceTodoItem {
+  id: string;
+  content: string;
+  status: WorkspaceTodoStatus;
+}
+
+export interface WorkspaceTodoRecord {
+  workspaceKey: string;
+  root: string;
+  mode: WorkspaceMode;
+  todos: WorkspaceTodoItem[];
+  updatedAt: string;
+}
+
+export interface SaveWorkspaceTodosInput {
+  workspaceKey: string;
+  root: string;
+  mode: WorkspaceMode;
+  todos: WorkspaceTodoItem[];
 }
 
 export interface SaveWorkspaceCheckpointInput {
@@ -76,6 +101,8 @@ export interface WorkspaceStore {
   deleteConversationBinding(conversationScopeId: string, targetKey: string): void;
   getResumeState(workspaceKey: string): WorkspaceResumeRecord | undefined;
   deleteResumeState(workspaceKey: string): boolean;
+  getTodos(workspaceKey: string): WorkspaceTodoRecord | undefined;
+  saveTodos(input: SaveWorkspaceTodosInput): WorkspaceTodoRecord;
   saveCheckpoint(input: SaveWorkspaceCheckpointInput): WorkspaceCheckpointRecord;
   searchCheckpoints(workspaceKey: string, query: string, limit?: number): WorkspaceCheckpointRecord[];
   close?(): void;
@@ -254,6 +281,47 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return result.changes > 0;
   }
 
+  getTodos(workspaceKey: string): WorkspaceTodoRecord | undefined {
+    const row = this.database.db
+      .select()
+      .from(workspaceTodos)
+      .where(eq(workspaceTodos.workspaceKey, workspaceKey))
+      .get();
+    return row ? rowToWorkspaceTodoRecord(row) : undefined;
+  }
+
+  saveTodos(input: SaveWorkspaceTodosInput): WorkspaceTodoRecord {
+    const updatedAt = new Date().toISOString();
+    const todosJson = JSON.stringify(input.todos);
+    this.database.db
+      .insert(workspaceTodos)
+      .values({
+        workspaceKey: input.workspaceKey,
+        root: input.root,
+        mode: input.mode,
+        todosJson,
+        updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: workspaceTodos.workspaceKey,
+        set: {
+          root: input.root,
+          mode: input.mode,
+          todosJson,
+          updatedAt,
+        },
+      })
+      .run();
+
+    return {
+      workspaceKey: input.workspaceKey,
+      root: input.root,
+      mode: input.mode,
+      todos: input.todos,
+      updatedAt,
+    };
+  }
+
   saveCheckpoint(input: SaveWorkspaceCheckpointInput): WorkspaceCheckpointRecord {
     const createdAt = new Date().toISOString();
     const stateJson = JSON.stringify(input.state);
@@ -374,6 +442,16 @@ function rowToWorkspaceConversationBinding(
     workspaceSessionId: row.workspaceSessionId,
     createdAt: row.createdAt,
     lastUsedAt: row.lastUsedAt,
+  };
+}
+
+function rowToWorkspaceTodoRecord(row: WorkspaceTodoRow): WorkspaceTodoRecord {
+  return {
+    workspaceKey: row.workspaceKey,
+    root: row.root,
+    mode: row.mode === "worktree" ? "worktree" : "checkout",
+    todos: JSON.parse(row.todosJson) as WorkspaceTodoItem[],
+    updatedAt: row.updatedAt,
   };
 }
 
