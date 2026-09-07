@@ -43,6 +43,7 @@ export interface WorkspaceConversationBinding {
 }
 
 export type WorkspaceTodoStatus = "pending" | "in_progress" | "completed";
+export type WorkspaceTodoReportMode = "each" | "summary";
 
 export interface WorkspaceTodoItem {
   id: string;
@@ -55,6 +56,7 @@ export interface WorkspaceTodoRecord {
   root: string;
   mode: WorkspaceMode;
   todos: WorkspaceTodoItem[];
+  reportMode: WorkspaceTodoReportMode;
   updatedAt: string;
 }
 
@@ -63,6 +65,7 @@ export interface SaveWorkspaceTodosInput {
   root: string;
   mode: WorkspaceMode;
   todos: WorkspaceTodoItem[];
+  reportMode?: WorkspaceTodoReportMode;
 }
 
 export interface SaveWorkspaceCheckpointInput {
@@ -91,6 +94,9 @@ export interface WorkspaceStore {
   getConversationBinding(
     conversationScopeId: string,
     targetKey: string,
+  ): WorkspaceConversationBinding | undefined;
+  getLatestConversationBinding(
+    conversationScopeId: string,
   ): WorkspaceConversationBinding | undefined;
   setConversationBinding(input: {
     conversationScopeId: string;
@@ -204,6 +210,19 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     return row ? rowToWorkspaceConversationBinding(row) : undefined;
   }
 
+  getLatestConversationBinding(
+    conversationScopeId: string,
+  ): WorkspaceConversationBinding | undefined {
+    const row = this.database.db
+      .select()
+      .from(workspaceConversationBindings)
+      .where(eq(workspaceConversationBindings.conversationScopeId, conversationScopeId))
+      .orderBy(desc(workspaceConversationBindings.lastUsedAt))
+      .get();
+
+    return row ? rowToWorkspaceConversationBinding(row) : undefined;
+  }
+
   setConversationBinding(input: {
     conversationScopeId: string;
     targetKey: string;
@@ -292,7 +311,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
 
   saveTodos(input: SaveWorkspaceTodosInput): WorkspaceTodoRecord {
     const updatedAt = new Date().toISOString();
-    const todosJson = JSON.stringify(input.todos);
+    const todosJson = JSON.stringify({ todos: input.todos, reportMode: input.reportMode ?? "each" });
     this.database.db
       .insert(workspaceTodos)
       .values({
@@ -318,6 +337,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       root: input.root,
       mode: input.mode,
       todos: input.todos,
+      reportMode: input.reportMode ?? "each",
       updatedAt,
     };
   }
@@ -450,7 +470,8 @@ function rowToWorkspaceTodoRecord(row: WorkspaceTodoRow): WorkspaceTodoRecord {
     workspaceKey: row.workspaceKey,
     root: row.root,
     mode: row.mode === "worktree" ? "worktree" : "checkout",
-    todos: JSON.parse(row.todosJson) as WorkspaceTodoItem[],
+    todos: (JSON.parse(row.todosJson) as { todos: WorkspaceTodoItem[] }).todos ?? JSON.parse(row.todosJson) as WorkspaceTodoItem[],
+    reportMode: (JSON.parse(row.todosJson) as { reportMode?: WorkspaceTodoReportMode }).reportMode ?? "each",
     updatedAt: row.updatedAt,
   };
 }

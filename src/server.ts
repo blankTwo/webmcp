@@ -17,7 +17,7 @@ import {
   registerArtifactTools,
 } from "./artifact-tools.js";
 import { loadConfig, type ServerConfig } from "./config.js";
-import { McpRequestOptimizer, ConcurrentMcpHandler } from "./mcp-request-optimizer.js";
+import { ConcurrentRequestLimiter, McpRequestOptimizer } from "./mcp-request-optimizer.js";
 import {
   createOpenAIIncomingArtifactAdapter,
   type IncomingArtifactAdapter,
@@ -52,19 +52,6 @@ import {
   type WorkspaceResumeStateInput,
 } from "./workspace-memory.js";
 import { formatAgentsPath, WorkspaceRegistry, type Workspace } from "./workspaces.js";
-import { summarizeLocalAgentProfile } from "./local-agent-profiles.js";
-import {
-  cancelLocalAgentSession,
-  getLocalAgentSession,
-  listLocalAgentSessions,
-  startLocalAgentSession,
-} from "./local-agent-service.js";
-import { createLocalAgentStore, type LocalAgentRecord, type LocalAgentStore } from "./local-agent-store.js";
-import {
-  formatLocalAgentProviderAvailabilitySummary,
-  getLocalAgentProviderAvailabilitySnapshot,
-  type LocalAgentProviderAvailability,
-} from "./local-agent-availability.js";
 import { DEVSPACE_VERSION } from "./version.js";
 import {
   bindConsoleEventStore,
@@ -152,23 +139,9 @@ const PROCESS_KILL_TOOL_ANNOTATIONS = {
   idempotentHint: false,
   openWorldHint: false,
 };
-const AGENT_RUN_TOOL_ANNOTATIONS = {
-  readOnlyHint: false,
-  destructiveHint: true,
-  idempotentHint: false,
-  openWorldHint: true,
-};
-const AGENT_CANCEL_TOOL_ANNOTATIONS = {
-  readOnlyHint: false,
-  destructiveHint: true,
-  idempotentHint: false,
-  openWorldHint: false,
-};
-
 interface RunningServer {
   app: ReturnType<typeof createMcpExpressApp>;
   config: ServerConfig;
-  localAgentProviders: LocalAgentProviderAvailability[];
   close(): Promise<void>;
 }
 
@@ -242,14 +215,11 @@ function serverInstructions(config: ServerConfig): string {
   const artifactInstruction = config.artifactsEnabled && isArtifactDownloadSupportedPlatform()
     ? " When the user supplies or generates a file that is not present on the DevSpace host, use download_artifact with its native file value, the existing workspace ID, and a suitable relative destination path chosen from the user's request and project structure. The tool refuses to overwrite an existing destination and returns the normalized workspace-relative path. Use normal workspace tools when explicit inspection, replacement, movement, renaming, or deletion is needed. Do not recreate binary files with write/edit calls or place signed URLs, native file objects, base64 content, or invented host paths in shell commands or logs."
     : "";
-  const subagentInstruction = config.subagents
-    ? " When the user explicitly asks for delegation or a second opinion, use run_agent, get_agent, list_agents, and cancel_agent directly instead of invoking the devspace agents CLI through shell."
-    : "";
   const memoryInstruction =
     " Use checkpoint only at meaningful milestones, before switching tasks, or when the user pauses work; do not checkpoint after every tool call. Use history_search only when a previous checkpoint is needed to recover an older decision or detail that is not in the current continuation. Compatibility: if the user says exactly `checkpoint` but this conversation does not expose the checkpoint tool, use the existing bash tool with command `checkpoint` and immediately follow the returned machine instruction without asking the user for more input.";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}.${memoryInstruction}${subagentInstruction}${artifactInstruction}`;
+    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}.${memoryInstruction}${artifactInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -266,27 +236,7 @@ function serverInstructions(config: ServerConfig): string {
     ? " Use exec_command for long-running or interactive commands, write_stdin to poll or interact with them, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session."
     : "";
 
-  return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}Prefer ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${subagentInstruction}${artifactInstruction}`;
-}
-
-function formatVisibleAgent(agent: {
-  name: string;
-  provider: string;
-  model?: string;
-  thinking?: string;
-  providerAvailable?: boolean;
-  providerUnavailableReason?: string;
-}): string {
-  const model = agent.model ? `, model ${agent.model}` : "";
-  const thinking = agent.thinking ? `, thinking ${agent.thinking}` : "";
-  const availability = agent.providerAvailable === false
-    ? `, unavailable: ${agent.providerUnavailableReason ?? "provider unavailable"}`
-    : "";
-  return `${agent.name} (${agent.provider}${model}${thinking}${availability})`;
-}
-
-function formatUnavailableAgentProvider(provider: LocalAgentProviderAvailability): string {
-  return `${provider.name} (${provider.reason ?? "unavailable"})`;
+  return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}Prefer ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
 }
 
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
@@ -337,48 +287,6 @@ const workspaceContinuationOutputSchema = z.object({
 const workspaceAgentsFileOutputSchema = z.object({
   path: z.string(),
   content: z.string(),
-});
-
-const workspaceLocalAgentOutputSchema = z.object({
-  name: z.string(),
-  description: z.string(),
-  provider: z.string(),
-  model: z.string().optional(),
-  thinking: z.string().optional(),
-  providerAvailable: z.boolean().optional(),
-  providerUnavailableReason: z.string().optional(),
-});
-
-const workspaceLocalAgentProviderOutputSchema = z.object({
-  name: z.string(),
-  available: z.boolean(),
-  reason: z.string().optional(),
-});
-
-const localAgentSessionOutputSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string().optional(),
-  profileName: z.string(),
-  provider: z.string(),
-  model: z.string().optional(),
-  thinking: z.string().optional(),
-  providerSessionId: z.string().optional(),
-  status: z.enum(["starting", "running", "idle", "error", "stopped"]),
-  latestResponse: z.string().optional(),
-  error: z.string().optional(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
-
-const localAgentSessionSummaryOutputSchema = z.object({
-  id: z.string(),
-  profileName: z.string(),
-  provider: z.string(),
-  model: z.string().optional(),
-  thinking: z.string().optional(),
-  status: z.enum(["starting", "running", "idle", "error", "stopped"]),
-  error: z.string().optional(),
-  updatedAt: z.string(),
 });
 
 const workspaceAvailableAgentsFileOutputSchema = z.object({
@@ -945,195 +853,11 @@ function registerManagedProcessTools(
   );
 }
 
-function localAgentSessionOutput(record: LocalAgentRecord) {
-  return {
-    id: record.id,
-    workspaceId: record.workspaceId,
-    profileName: record.profileName,
-    provider: record.provider,
-    model: record.model,
-    thinking: record.thinking,
-    providerSessionId: record.providerSessionId,
-    status: record.status,
-    latestResponse: record.latestResponse,
-    error: record.error,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-  };
-}
-
-function localAgentSessionSummary(record: LocalAgentRecord) {
-  return {
-    id: record.id,
-    profileName: record.profileName,
-    provider: record.provider,
-    model: record.model,
-    thinking: record.thinking,
-    status: record.status,
-    error: record.error,
-    updatedAt: record.updatedAt,
-  };
-}
-
-function registerLocalAgentTools(
-  server: McpServer,
-  config: ServerConfig,
-  workspaces: WorkspaceRegistry,
-  store: LocalAgentStore,
-): void {
-  server.registerTool(
-    "run_agent",
-    {
-      title: "Run subagent",
-      description:
-        "Start a configured subagent profile or built-in provider in a workspace, or send a follow-up to an existing agent id. Returns immediately with a persistent agent session; use get_agent to read the final response.",
-      inputSchema: {
-        workspaceId: optionalWorkspaceIdSchema(),
-        target: z.string().min(1).describe("Subagent profile name, built-in provider name, or existing agent id."),
-        prompt: z.string().min(1).describe("Self-contained task for the subagent."),
-        model: z.string().min(1).optional().describe("Optional provider-specific model override."),
-        thinking: z.string().min(1).optional().describe("Optional provider-specific thinking/effort override."),
-      },
-      outputSchema: resultOutputSchema({ agent: localAgentSessionOutputSchema }),
-      _meta: {},
-      annotations: AGENT_RUN_TOOL_ANNOTATIONS,
-    },
-    async ({ workspaceId, target, prompt, model, thinking }, { _meta }) => {
-      const startedAt = performance.now();
-      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
-      const agent = await startLocalAgentSession(config, store, {
-        workspaceId: workspace.id,
-        workspaceRoot: workspace.root,
-        target,
-        prompt,
-        model,
-        thinking,
-      });
-      const output = localAgentSessionOutput(agent);
-      const result = `Started subagent ${agent.id} (${agent.profileName}, ${agent.provider}).`;
-      logToolCall(config, {
-        tool: "run_agent",
-        workspaceId: workspace.id,
-        success: true,
-        durationMs: Math.round(performance.now() - startedAt),
-      });
-      return {
-        content: [textBlock(result)],
-        structuredContent: { result, agent: output },
-      };
-    },
-  );
-
-  server.registerTool(
-    "get_agent",
-    {
-      title: "Get subagent",
-      description: "Read the latest state and response of one subagent session in the selected workspace.",
-      inputSchema: {
-        workspaceId: optionalWorkspaceIdSchema(),
-        agentId: z.string().min(1).describe("Agent id returned by run_agent."),
-      },
-      outputSchema: resultOutputSchema({ agent: localAgentSessionOutputSchema }),
-      _meta: {},
-      annotations: { readOnlyHint: true },
-    },
-    async ({ workspaceId, agentId }, { _meta }) => {
-      const startedAt = performance.now();
-      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
-      const agent = getLocalAgentSession(store, workspace.id, workspace.root, agentId);
-      const output = localAgentSessionOutput(agent);
-      const result = agent.latestResponse
-        ? `${agent.id} is ${agent.status}.\n${agent.latestResponse}`
-        : agent.error
-          ? `${agent.id} is ${agent.status}: ${agent.error}`
-          : `${agent.id} is ${agent.status}.`;
-      logToolCall(config, {
-        tool: "get_agent",
-        workspaceId: workspace.id,
-        success: true,
-        durationMs: Math.round(performance.now() - startedAt),
-      });
-      return {
-        content: [textBlock(result)],
-        structuredContent: { result, agent: output },
-      };
-    },
-  );
-
-  server.registerTool(
-    "list_agents",
-    {
-      title: "List subagents",
-      description: "List persistent subagent sessions belonging to the selected workspace.",
-      inputSchema: {
-        workspaceId: optionalWorkspaceIdSchema(),
-      },
-      outputSchema: resultOutputSchema({ agents: z.array(localAgentSessionSummaryOutputSchema) }),
-      _meta: {},
-      annotations: { readOnlyHint: true },
-    },
-    async ({ workspaceId }, { _meta }) => {
-      const startedAt = performance.now();
-      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
-      const agents = listLocalAgentSessions(store, workspace.id, workspace.root).map(localAgentSessionSummary);
-      const result = agents.length === 0
-        ? "No subagent sessions found for this workspace."
-        : `Found ${agents.length} subagent session${agents.length === 1 ? "" : "s"}.`;
-      logToolCall(config, {
-        tool: "list_agents",
-        workspaceId: workspace.id,
-        success: true,
-        durationMs: Math.round(performance.now() - startedAt),
-      });
-      return {
-        content: [textBlock(result)],
-        structuredContent: { result, agents },
-      };
-    },
-  );
-
-  server.registerTool(
-    "cancel_agent",
-    {
-      title: "Cancel subagent",
-      description: "Terminate a running subagent worker and its child process tree in the selected workspace.",
-      inputSchema: {
-        workspaceId: optionalWorkspaceIdSchema(),
-        agentId: z.string().min(1).describe("Agent id returned by run_agent."),
-      },
-      outputSchema: resultOutputSchema({ agent: localAgentSessionOutputSchema }),
-      _meta: {},
-      annotations: AGENT_CANCEL_TOOL_ANNOTATIONS,
-    },
-    async ({ workspaceId, agentId }, { _meta }) => {
-      const startedAt = performance.now();
-      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
-      const agent = cancelLocalAgentSession(store, workspace.id, workspace.root, agentId);
-      const output = localAgentSessionOutput(agent);
-      const result = agent.status === "stopped"
-        ? `Stopped subagent ${agent.id}.`
-        : `Subagent ${agent.id} is already ${agent.status}.`;
-      logToolCall(config, {
-        tool: "cancel_agent",
-        workspaceId: workspace.id,
-        success: true,
-        durationMs: Math.round(performance.now() - startedAt),
-      });
-      return {
-        content: [textBlock(result)],
-        structuredContent: { result, agent: output },
-      };
-    },
-  );
-}
-
 export function createMcpServer(
   config: ServerConfig,
   workspaces: WorkspaceRegistry,
   processSessions: ProcessSessionManager,
-  localAgentProviders: LocalAgentProviderAvailability[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
-  localAgentStore?: LocalAgentStore,
 ): McpServer {
   const server = new McpServer(
     {
@@ -1228,8 +952,6 @@ export function createMcpServer(
         agentsFiles: z.array(workspaceAgentsFileOutputSchema).optional(),
         availableAgentsFiles: z.array(workspaceAvailableAgentsFileOutputSchema).optional(),
         skillCount: z.number().int().nonnegative().optional(),
-        agentProviders: z.array(workspaceLocalAgentProviderOutputSchema).optional(),
-        agents: z.array(workspaceLocalAgentOutputSchema).optional(),
         continuation: workspaceContinuationOutputSchema.optional(),
         instruction: z.string(),
       },
@@ -1269,16 +991,6 @@ export function createMcpServer(
           description: skill.description,
           path: formatPathForPrompt(skill.filePath),
         }));
-      const cardAgentProviders = config.subagents ? localAgentProviders : [];
-      const cardAgents = workspace.agentProfiles.map((profile) => {
-        const summary = summarizeLocalAgentProfile(profile);
-        const availability = cardAgentProviders.find((provider) => provider.name === summary.provider);
-        return {
-          ...summary,
-          providerAvailable: availability?.available,
-          providerUnavailableReason: availability?.reason,
-        };
-      });
       const cardAgentsFiles = agentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
         content: file.content,
@@ -1286,8 +998,6 @@ export function createMcpServer(
       const cardAvailableAgentsFiles = availableAgentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
       }));
-      const visibleAgentProviders = includeBootstrapContext ? cardAgentProviders : [];
-      const visibleAgents = includeBootstrapContext ? cardAgents : [];
       const loadedAgentsFiles = includeBootstrapContext ? cardAgentsFiles : [];
       const availableAgentsFileOutputs = includeBootstrapContext ? cardAvailableAgentsFiles : [];
       const cardInstruction = config.skillsEnabled
@@ -1322,15 +1032,6 @@ export function createMcpServer(
             config.skillsEnabled && includeBootstrapContext && cardSkills.length > 0
               ? `${cardSkills.length} skill(s) available; use skills_list only if this task needs one.`
               : undefined,
-            visibleAgentProviders.some((provider) => provider.available)
-              ? `Available subagent providers: ${visibleAgentProviders.filter((provider) => provider.available).map((provider) => provider.name).join(", ")}`
-              : undefined,
-            visibleAgentProviders.some((provider) => !provider.available)
-              ? `Unavailable subagent providers: ${visibleAgentProviders.filter((provider) => !provider.available).map(formatUnavailableAgentProvider).join(", ")}`
-              : undefined,
-            visibleAgents.length > 0
-              ? `Available subagent profiles: ${visibleAgents.map(formatVisibleAgent).join(", ")}`
-              : undefined,
             continuation?.text,
             instruction,
           ].filter(Boolean).join("\n"),
@@ -1354,8 +1055,6 @@ export function createMcpServer(
           agentsFiles: cardAgentsFiles,
           availableAgentsFiles: cardAvailableAgentsFiles,
           skills: cardSkills,
-          agentProviders: cardAgentProviders,
-          agents: cardAgents,
           instruction: cardInstruction,
           continuation: continuation
             ? {
@@ -1369,8 +1068,6 @@ export function createMcpServer(
             agentsFiles: cardAgentsFiles.length,
             availableAgentsFiles: cardAvailableAgentsFiles.length,
             skills: cardSkills.length,
-            agentProviders: cardAgentProviders.length,
-            agents: cardAgents.length,
           },
         }),
       });
@@ -1388,8 +1085,6 @@ export function createMcpServer(
                 agentsFiles: loadedAgentsFiles,
                 availableAgentsFiles: availableAgentsFileOutputs,
                 skillCount: cardSkills.length,
-                agentProviders: visibleAgentProviders,
-                agents: visibleAgents,
               }
             : {}),
           ...(continuation ? { continuation } : {}),
@@ -2605,13 +2300,6 @@ export function createMcpServer(
     registerManagedProcessTools(server, config, workspaces, processSessions);
   }
 
-  if (config.subagents) {
-    if (!localAgentStore) {
-      throw new Error("Subagent tools require a LocalAgentStore.");
-    }
-    registerLocalAgentTools(server, config, workspaces, localAgentStore);
-  }
-
   if (config.artifactsEnabled && isArtifactDownloadSupportedPlatform()) {
     registerArtifactTools(server, {
       config,
@@ -2653,14 +2341,9 @@ export function createServer(
   const processSessions = new ProcessSessionManager();
   const consoleEvents = new ConsoleEventStore(2_000, config.stateDir);
   bindConsoleEventStore(config, consoleEvents);
-  const localAgentStore = config.subagents ? createLocalAgentStore(config) : undefined;
-  const localAgentProviders = config.subagents
-    ? getLocalAgentProviderAvailabilitySnapshot()
-    : [];
 
-  // ✨ Performance optimization: initialize request optimizer and concurrent handler
   const mcpOptimizer = new McpRequestOptimizer();
-  const concurrentHandler = new ConcurrentMcpHandler();
+  const requestLimiter = new ConcurrentRequestLimiter();
   const cleanupInterval = mcpOptimizer.startCacheCleanup();
 
   if (config.logging.trustProxy) {
@@ -2722,10 +2405,8 @@ export function createServer(
     }
     res.setHeader("Cache-Control", "no-store");
     res.json({
-      concurrent: concurrentHandler.getStats(),
-      cache: {
-        size: mcpOptimizer.getCacheSize(),
-      },
+      concurrent: requestLimiter.getStats(),
+      cache: mcpOptimizer.getStats(),
     });
   });
 
@@ -3055,24 +2736,17 @@ export function createServer(
   app.post("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
 
-    // Fast path: try cache for tools/list and prompts/list
-    if (mcpOptimizer.tryServeCached(req, res)) {
-      logEvent(config.logging, "debug", "mcp_cache_hit", { requestId });
-      return;
-    }
-
-    // Concurrent limit check
-    if (!concurrentHandler.canAccept()) {
-      logEvent(config.logging, "warn", "mcp_throttled", { 
-        requestId, 
-        stats: concurrentHandler.getStats() 
+    const releaseRequest = requestLimiter.tryAcquire();
+    if (!releaseRequest) {
+      logEvent(config.logging, "warn", "mcp_throttled", {
+        requestId,
+        stats: requestLimiter.getStats(),
       });
       sendJsonRpcError(res, 429, -32000, "Too many concurrent requests");
       return;
     }
 
-    // Wrap original logic with concurrent handler
-    await concurrentHandler.wrap(async () => {
+    try {
       await new Promise<void>((resolve, reject) => {
         bearerAuth(req, res, (error?: unknown) => {
           if (error) reject(error);
@@ -3093,6 +2767,13 @@ export function createServer(
         return;
       }
 
+      // Authentication and resource validation intentionally happen before the
+      // fast path. Cache hits must never bypass OAuth verification.
+      if (mcpOptimizer.tryServeCached(req, res)) {
+        logEvent(config.logging, "debug", "mcp_cache_hit", { requestId });
+        return;
+      }
+
       logEvent(config.logging, "debug", "mcp_request", {
         requestId,
         method: req.method,
@@ -3108,9 +2789,7 @@ export function createServer(
         config,
         workspaces,
         processSessions,
-        localAgentProviders,
         incomingArtifactAdapters,
-        localAgentStore,
       );
 
       let closed = false;
@@ -3124,31 +2803,39 @@ export function createServer(
         void closeRequestRuntime();
       });
 
+      const cacheableRequest = mcpOptimizer.isCacheableRequest(req);
+      let responseBody = "";
+      const originalWrite = res.write;
+      const originalEnd = res.end;
+      const captureChunk = (chunk: unknown): void => {
+        if (typeof chunk === "string") responseBody += chunk;
+        else if (Buffer.isBuffer(chunk)) responseBody += chunk.toString("utf8");
+        else if (chunk instanceof Uint8Array) responseBody += Buffer.from(chunk).toString("utf8");
+      };
+
+      if (cacheableRequest) {
+        res.write = ((chunk: unknown, ...args: unknown[]) => {
+          captureChunk(chunk);
+          return Reflect.apply(originalWrite, res, [chunk, ...args]) as boolean;
+        }) as typeof res.write;
+        res.end = ((chunk?: unknown, ...args: unknown[]) => {
+          captureChunk(chunk);
+          return Reflect.apply(originalEnd, res, [chunk, ...args]) as Response;
+        }) as typeof res.end;
+      }
+
       try {
         await mcpServer.connect(transport);
-        
-        // Intercept response to cache it
-        const originalWrite = res.write.bind(res);
-        let responseBody = "";
-        res.write = function(chunk: any, ...args: any[]): boolean {
-          if (typeof chunk === "string") responseBody += chunk;
-          else if (Buffer.isBuffer(chunk)) responseBody += chunk.toString();
-          return originalWrite(chunk, ...args);
-        };
-        
         await transport.handleRequest(req, res, req.body);
-        
-        // Cache the response if applicable
-        try {
-          const method = req.body?.method || (Array.isArray(req.body) && req.body[0]?.method);
-          if ((method === "tools/list" || method === "prompts/list") && responseBody) {
-            const parsed = JSON.parse(responseBody);
-            mcpOptimizer.cacheResponse(method, req.auth?.token, parsed);
+
+        if (cacheableRequest && responseBody) {
+          try {
+            mcpOptimizer.cacheResponse(req, JSON.parse(responseBody));
+          } catch {
+            // A malformed or non-JSON response is never cached; the response
+            // already sent to the client remains authoritative.
           }
-        } catch {
-          // Cache failure does not affect main flow
         }
-        
       } catch (error) {
         logEvent(config.logging, "error", "mcp_request_error", {
           requestId,
@@ -3158,11 +2845,17 @@ export function createServer(
           sendJsonRpcError(res, 500, -32603, "Internal server error");
         }
       } finally {
+        if (cacheableRequest) {
+          res.write = originalWrite;
+          res.end = originalEnd;
+        }
         if (res.writableEnded || res.destroyed) {
           await closeRequestRuntime();
         }
       }
-    });
+    } finally {
+      releaseRequest();
+    }
   });
 
   const rejectStatelessMcpMethod = (req: Request, res: Response): void => {
@@ -3176,14 +2869,12 @@ export function createServer(
   return {
     app,
     config,
-    localAgentProviders,
     close: () => {
       closePromise ??= (async () => {
         clearInterval(cleanupInterval);
         mcpOptimizer.clearCache();
         processSessions.shutdown();
         oauthProvider.close();
-        localAgentStore?.close();
         closeConsoleEventStore(config);
         workspaceStore.close?.();
       })();
@@ -3201,7 +2892,7 @@ async function isMainModule(): Promise<boolean> {
 }
 
 if (await isMainModule()) {
-  const { app, config, close, localAgentProviders } = createServer();
+  const { app, config, close } = createServer();
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(
       `devspace listening on http://${config.host}:${config.port}/mcp`,
@@ -3218,9 +2909,6 @@ if (await isMainModule()) {
         ? "enabled"
         : `unsupported on ${process.platform}`;
     console.log(`native artifact download: ${artifactDownloadStatus}`);
-    if (config.subagents) {
-      console.log(`subagent providers: ${formatLocalAgentProviderAvailabilitySummary(localAgentProviders)}`);
-    }
   });
 
   let shuttingDown = false;

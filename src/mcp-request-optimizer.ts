@@ -1,128 +1,191 @@
-/**
- * MCP Stateless 请求优化器
- * 
- * 问题分析：
- * - 每次 POST /mcp 都创建新 McpServer + 注册 26 个工具 + 创建 Transport
- * - 工具 handler 闭包捕获外部依赖（workspaces 等），不能简单缓存
- * 
- * 优化策略：
- * 1. 预热：启动时创建一次 McpServer，让 V8 优化热路径
- * 2. Schema 缓存：Zod schema 对象可以复用（不可变）
- * 3. 并发处理：移除 Express 中间件串行瓶颈
- * 4. 快速路径：常见请求（tools/list）走缓存响应
- */
-
+import { createHash } from "node:crypto";
 import type { Request, Response } from "express";
 
-export interface CachedResponse {
-  body: any;
+type JsonRpcId = string | number | null;
+
+interface JsonRpcRequestBody {
+  jsonrpc: "2.0";
+  id: JsonRpcId;
+  method: "tools/list";
+  params?: unknown;
+}
+
+interface JsonRpcSuccessResponse {
+  jsonrpc: "2.0";
+  id: JsonRpcId;
+  result: unknown;
+}
+
+interface CachedToolListResult {
+  result: unknown;
   expiresAt: number;
 }
 
+export interface McpRequestOptimizerStats {
+  size: number;
+  hits: number;
+  misses: number;
+  writes: number;
+}
+
+/**
+ * Caches only the successful `tools/list` result payload.
+ *
+ * Authentication and OAuth resource validation must happen before this class is
+ * consulted. The JSON-RPC envelope is never cached: every cache hit is wrapped
+ * with the current request id so responses cannot leak a previous request id.
+ */
 export class McpRequestOptimizer {
-  private responseCache = new Map<string, CachedResponse>();
-  private readonly TOOLS_LIST_CACHE_MS = 60_000; // tools/list 缓存 1 分钟
+  private readonly responseCache = new Map<string, CachedToolListResult>();
+  private readonly toolsListCacheMs: number;
+  private hits = 0;
+  private misses = 0;
+  private writes = 0;
 
-  /**
-   * 尝试从缓存返回响应（适用于 tools/list 等静态请求）
-   */
+  constructor(toolsListCacheMs = 60_000) {
+    this.toolsListCacheMs = toolsListCacheMs;
+  }
+
+  isCacheableRequest(req: Request): boolean {
+    return this.requestBody(req) !== undefined && typeof req.auth?.token === "string";
+  }
+
   tryServeCached(req: Request, res: Response): boolean {
-    if (req.method !== "POST") return false;
+    const request = this.requestBody(req);
+    const cacheKey = this.cacheKey(req, request);
+    if (!request || !cacheKey) return false;
 
-    try {
-      const body = req.body;
-      if (!body || typeof body !== "object") return false;
-
-      // 只缓存 tools/list 和 prompts/list（结果稳定且频繁调用）
-      const method = body.method || (Array.isArray(body) && body[0]?.method);
-      if (method !== "tools/list" && method !== "prompts/list") return false;
-
-      const cacheKey = `${method}:${req.auth?.token || "anonymous"}`;
-      const cached = this.responseCache.get(cacheKey);
-
-      if (cached && Date.now() < cached.expiresAt) {
-        res.setHeader("Content-Type", "application/json");
-        res.setHeader("X-DevSpace-Cache", "hit");
-        res.send(cached.body);
-        return true;
-      }
-    } catch {
-      // 解析失败，走正常流程
+    const cached = this.responseCache.get(cacheKey);
+    if (!cached) {
+      this.misses += 1;
+      return false;
     }
 
-    return false;
+    if (Date.now() >= cached.expiresAt) {
+      this.responseCache.delete(cacheKey);
+      this.misses += 1;
+      return false;
+    }
+
+    this.hits += 1;
+    res.setHeader("X-DevSpace-Cache", "hit");
+    res.status(200).json({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: cached.result,
+    } satisfies JsonRpcSuccessResponse);
+    return true;
   }
 
-  /**
-   * 缓存响应
-   */
-  cacheResponse(method: string, token: string | undefined, body: any): void {
-    if (method !== "tools/list" && method !== "prompts/list") return;
+  cacheResponse(req: Request, response: unknown): boolean {
+    const request = this.requestBody(req);
+    const cacheKey = this.cacheKey(req, request);
+    if (!request || !cacheKey || !isSuccessfulResponseFor(response, request.id)) {
+      return false;
+    }
 
-    const cacheKey = `${method}:${token || "anonymous"}`;
     this.responseCache.set(cacheKey, {
-      body,
-      expiresAt: Date.now() + this.TOOLS_LIST_CACHE_MS,
+      result: response.result,
+      expiresAt: Date.now() + this.toolsListCacheMs,
     });
+    this.writes += 1;
+    return true;
   }
 
-  /**
-   * 获取缓存统计
-   */
-  getCacheSize(): number {
-    return this.responseCache.size;
+  getStats(): McpRequestOptimizerStats {
+    return {
+      size: this.responseCache.size,
+      hits: this.hits,
+      misses: this.misses,
+      writes: this.writes,
+    };
   }
 
-  /**
-   * 清空缓存（配置变更时调用）
-   */
   clearCache(): void {
     this.responseCache.clear();
   }
 
-  /**
-   * 定期清理过期缓存
-   */
   startCacheCleanup(): NodeJS.Timeout {
-    return setInterval(() => {
+    const timer = setInterval(() => {
       const now = Date.now();
       for (const [key, cached] of this.responseCache.entries()) {
-        if (now >= cached.expiresAt) {
-          this.responseCache.delete(key);
-        }
+        if (now >= cached.expiresAt) this.responseCache.delete(key);
       }
-    }, 30_000);
+    }, Math.min(30_000, this.toolsListCacheMs));
+    timer.unref();
+    return timer;
+  }
+
+  private requestBody(req: Request): JsonRpcRequestBody | undefined {
+    const body = req.body as unknown;
+    if (!body || Array.isArray(body) || typeof body !== "object") return undefined;
+
+    const candidate = body as Record<string, unknown>;
+    if (candidate.jsonrpc !== "2.0" || candidate.method !== "tools/list") return undefined;
+    if (!("id" in candidate) || !isJsonRpcId(candidate.id)) return undefined;
+
+    return {
+      jsonrpc: "2.0",
+      id: candidate.id,
+      method: "tools/list",
+      ...(candidate.params === undefined ? {} : { params: candidate.params }),
+    };
+  }
+
+  private cacheKey(req: Request, request: JsonRpcRequestBody | undefined): string | undefined {
+    const token = req.auth?.token;
+    if (!request || typeof token !== "string" || token.length === 0) return undefined;
+
+    const protocolVersion = req.header("mcp-protocol-version") ?? "";
+    const params = JSON.stringify(request.params ?? null);
+    return createHash("sha256")
+      .update("tools/list\0")
+      .update(token)
+      .update("\0")
+      .update(protocolVersion)
+      .update("\0")
+      .update(params)
+      .digest("base64url");
   }
 }
 
 /**
- * 并发请求处理器：避免 Express 中间件串行执行
+ * Backpressure guard for expensive uncached MCP work. It protects the process
+ * under load; it is intentionally not described as a throughput optimizer.
  */
-export class ConcurrentMcpHandler {
+export class ConcurrentRequestLimiter {
   private activeRequests = 0;
-  private readonly MAX_CONCURRENT = 50;
 
-  /**
-   * 检查是否可以接受新请求
-   */
-  canAccept(): boolean {
-    return this.activeRequests < this.MAX_CONCURRENT;
-  }
+  constructor(private readonly maxConcurrent = 50) {}
 
-  /**
-   * 包装异步处理器，自动管理并发计数
-   */
-  wrap<T>(handler: () => Promise<T>): Promise<T> {
-    this.activeRequests++;
-    return handler().finally(() => {
-      this.activeRequests--;
-    });
-  }
-
-  getStats() {
-    return {
-      active: this.activeRequests,
-      limit: this.MAX_CONCURRENT,
+  tryAcquire(): (() => void) | undefined {
+    if (this.activeRequests >= this.maxConcurrent) return undefined;
+    this.activeRequests += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeRequests -= 1;
     };
   }
+
+  getStats(): { active: number; limit: number } {
+    return {
+      active: this.activeRequests,
+      limit: this.maxConcurrent,
+    };
+  }
+}
+
+function isJsonRpcId(value: unknown): value is JsonRpcId {
+  return value === null || typeof value === "string" || typeof value === "number";
+}
+
+function isSuccessfulResponseFor(response: unknown, requestId: JsonRpcId): response is JsonRpcSuccessResponse {
+  if (!response || Array.isArray(response) || typeof response !== "object") return false;
+  const candidate = response as Record<string, unknown>;
+  return candidate.jsonrpc === "2.0"
+    && candidate.id === requestId
+    && "result" in candidate
+    && !("error" in candidate);
 }

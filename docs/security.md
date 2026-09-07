@@ -92,15 +92,6 @@ Managed worktrees reduce accidental edits to your active checkout, but they are
 not a security boundary. They are a workflow boundary for isolated coding
 sessions.
 
-## Subagents
-
-When `DEVSPACE_SUBAGENTS=1`, native `run_agent` sessions execute the configured
-local provider against the selected workspace. Provider processes run with the
-local user's authority and may be write-capable. A profile that says
-"read-only" is an agent instruction, not an operating-system or DevSpace
-sandbox boundary. `cancel_agent` terminates the recorded worker process tree,
-and agent lookup/cancellation is scoped to the selected workspace.
-
 ## Native File Download
 
 Native file download is an opt-in, one-shot transfer into an already-open

@@ -132,18 +132,17 @@ npx @waishnav/devspace init --force
 
 ## Unknown `workspaceId`
 
-`workspaceId` values are session identifiers. If the server restarts and the
-client receives an unknown workspace error, call `open_workspace` again for that
-project.
+`workspaceId` values identify persisted DevSpace workspaces; they are no longer
+MCP transport-session identifiers. On ChatGPT, `open_workspace` binds the current
+conversation to the opened checkout or worktree, so later tools normally omit
+`workspaceId` and resolve the current workspace server-side.
 
-Workspace session metadata is persisted. ChatGPT may provide optional
-conversation metadata that lets DevSpace resume the same checkout workspace for
-the same project in that conversation; repeated opens reuse the `workspaceId`
-and do not repeat context already provided for that reused checkout. Worktree
-mode always creates a new isolated workspace with its own complete context.
-Hosts without supported conversation metadata receive a normal new workspace.
-In all cases, continue passing the `workspaceId` returned by `open_workspace` to
-later tools. Other MCP hosts use this explicit workspace workflow as well.
+Workspace metadata and conversation bindings survive a DevSpace restart.
+Repeated checkout opens reuse the persisted workspace without repeating context;
+worktree mode creates a new isolated workspace and makes it the current binding.
+Hosts without supported conversation metadata continue to pass the explicit
+`workspaceId`. If a persisted workspace has been removed or becomes invalid,
+call `open_workspace` again.
 
 ## Data Retention
 
@@ -212,25 +211,14 @@ DevSpace looks in standard Agent Skills locations:
 
 It also checks compatibility and custom paths:
 
-- the bundled `subagent-delegation` skill when `DEVSPACE_SUBAGENTS=1`, unless `~/.devspace/skills/subagent-delegation/SKILL.md` exists
 - `DEVSPACE_AGENT_DIR/skills`, defaulting to `~/.codex/skills`
 - additional paths from `DEVSPACE_SKILL_PATHS`
 
-When `DEVSPACE_SUBAGENTS=1`, DevSpace loads agent profiles from
-`~/.devspace/agents/*.md` and project `.devspace/agents/*.md`, then exposes a
-compact profile catalog through `open_workspace` plus native `run_agent`,
-`get_agent`, `list_agents`, and `cancel_agent` tools. The bundled
-`subagent-delegation` skill teaches when to use those tools. The
-`devspace agents` CLI remains available for terminal users and integration
-debugging.
-
-Packaged agent profile examples under `examples/agents/` are starter templates.
-Copy or adapt them into one of the active profile directories before use.
-
 Legacy project paths such as `.pi/skills` can be added through `DEVSPACE_SKILL_PATHS` when needed.
 
-If a skill appears in `open_workspace`, the model must read that skill's
-`SKILL.md` before reading other files inside the skill directory.
+Skills are discovered lazily. Use `skills_list` when skill guidance may be
+relevant, then `skill_read` for the matching skill before reading other files
+inside that skill directory.
 
 ## Tool Cards Do Not Appear In ChatGPT
 

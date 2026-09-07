@@ -95,9 +95,9 @@ MCP clients discover metadata from:
 
 | Value | Behavior |
 | --- | --- |
-| `minimal` | Exposes `open_workspace`, `read`, `move_file`, `write`, `edit`, and `bash`. Clients use `bash` with tools such as `rg`, `find`, and `ls` for inspection. |
+| `minimal` | Exposes `open_workspace`, multi-file `read`, `move_file`, `write`, `edit`, multi-file `apply_patch`, `code_explore`, and `bash`. Clients use `bash` with tools such as `rg`, `find`, and `ls` for other inspection. `skills_list` / `skill_read` are added when skills are enabled. |
 | `full` | Default. Exposes the minimal tools plus dedicated `grep`, `glob`, and `ls`, and managed-process tools `exec_command`, `write_stdin`, `list_processes`, `get_process`, and `kill_process`. |
-| `codex` | Experimental. Exposes `open_workspace`, `read`, `move_file`, `apply_patch`, `exec_command`, `write_stdin`, `list_processes`, `get_process`, and `kill_process`. Existing `write`, `edit`, `bash`, `grep`, `glob`, and `ls` tools are hidden. |
+| `codex` | Experimental short surface. Exposes `open_workspace`, multi-file `read`, `move_file`, `apply_patch`, `code_explore`, `exec_command`, `write_stdin`, `list_processes`, `get_process`, and `kill_process`; `skills_list` / `skill_read` are added when skills are enabled. Existing `write`, `edit`, `bash`, `grep`, `glob`, and `ls` tools are hidden. |
 
 `DEVSPACE_MINIMAL_TOOLS` remains a backward-compatible alias when
 `DEVSPACE_TOOL_MODE` is unset: `1` selects `minimal` and `0` selects `full`.
@@ -129,7 +129,6 @@ resources.
 | Variable | Purpose |
 | --- | --- |
 | `DEVSPACE_SKILLS` | Set to `0` to hide skills. Enabled by default. |
-| `DEVSPACE_SUBAGENTS` | Set to `1` to expose configured agent profiles plus native `run_agent`, `get_agent`, `list_agents`, and `cancel_agent` tools. Experimental and disabled by default. |
 | `DEVSPACE_AGENT_DIR` | Defaults to `~/.codex`; its `skills` child is loaded for compatibility. |
 | `DEVSPACE_SKILL_PATHS` | Optional comma-separated additional skill directories. |
 
@@ -141,26 +140,8 @@ DevSpace discovers standard Agent Skills from:
 
 It also keeps compatibility with:
 
-- the bundled `subagent-delegation` skill when `DEVSPACE_SUBAGENTS=1`, unless `~/.devspace/skills/subagent-delegation/SKILL.md` exists
 - `DEVSPACE_AGENT_DIR/skills`, defaulting to `~/.codex/skills`
 - additional paths from `DEVSPACE_SKILL_PATHS`
-
-When Subagents are enabled, DevSpace discovers agent profiles
-from:
-
-- `~/.devspace/agents/*.md`
-- project `.devspace/agents/*.md`
-
-`open_workspace` returns a compact catalog containing profile names,
-descriptions, providers, and optional models/thinking levels so the host model can choose an
-agent without reading provider-specific launch details. Native `run_agent`,
-`get_agent`, `list_agents`, and `cancel_agent` tools operate on persistent
-sessions scoped to the selected workspace. The `subagent-delegation` skill
-teaches the model when to use those tools. The `devspace agents` CLI remains
-available for terminal users and integration debugging.
-
-Starter profile templates are available under `examples/agents/`. Copy or adapt
-them into one of the active profile directories before use.
 
 Legacy project paths such as `.pi/skills` can be added through `DEVSPACE_SKILL_PATHS` when needed.
 

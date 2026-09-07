@@ -31,10 +31,6 @@ import {
   type LoadedSkills,
   type SkillReadResolution,
 } from "./skills.js";
-import {
-  loadLocalAgentProfiles,
-  type LocalAgentProfile,
-} from "./local-agent-profiles.js";
 
 export interface LoadedAgentsFile {
   path: string;
@@ -62,7 +58,6 @@ export interface Workspace {
   worktree?: WorkspaceWorktree;
   skills: LoadedSkills["skills"];
   skillDiagnostics: LoadedSkills["diagnostics"];
-  agentProfiles: LocalAgentProfile[];
   activatedSkillDirs: Set<string>;
 }
 
@@ -119,6 +114,11 @@ export class WorkspaceRegistry {
     const mode = workspaceInput.mode ?? "checkout";
     if (mode === "worktree") {
       const context = await this.openWorktreeWorkspace(workspaceInput.path, workspaceInput.baseRef);
+      this.store.setConversationBinding({
+        conversationScopeId,
+        targetKey: JSON.stringify(["worktree", projectKey, context.workspace.id]),
+        workspaceSessionId: context.workspace.id,
+      });
       return {
         ...context,
         // A new worktree always has its own workspace-specific context.
@@ -237,7 +237,6 @@ export class WorkspaceRegistry {
   }
 
   private async reusedWorkspaceContext(workspace: Workspace): Promise<WorkspaceContext> {
-    workspace.agentProfiles = await loadLocalAgentProfiles(this.config, workspace.root);
     const agentsFiles = await this.loadInitialAgentsFiles(workspace.root);
     const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
 
@@ -248,6 +247,17 @@ export class WorkspaceRegistry {
       workspaceReused: true,
       includeBootstrapContext: true,
     };
+  }
+
+  getConversationWorkspace(conversationScopeId: string): Workspace | undefined {
+    const binding = this.store?.getLatestConversationBinding(conversationScopeId);
+    if (!binding) return undefined;
+
+    try {
+      return this.getWorkspace(binding.workspaceSessionId);
+    } catch {
+      return undefined;
+    }
   }
 
   getWorkspace(workspaceId: string): Workspace {
@@ -282,7 +292,6 @@ export class WorkspaceRegistry {
             }
           : undefined,
       ...this.loadSkillsForWorkspace(root),
-      agentProfiles: [],
       activatedSkillDirs: new Set(),
     };
     this.store?.touchSession(workspaceId);
@@ -347,7 +356,7 @@ export class WorkspaceRegistry {
     return this.store.getTodos(await this.memoryKey(workspace));
   }
 
-  async saveTodos(workspace: Workspace, todos: WorkspaceTodoItem[]): Promise<WorkspaceTodoRecord> {
+  async saveTodos(workspace: Workspace, todos: WorkspaceTodoItem[], reportMode?: "each" | "summary"): Promise<WorkspaceTodoRecord> {
     if (!this.store) {
       throw new Error("Workspace persistence is unavailable; todo list cannot be saved.");
     }
@@ -356,6 +365,7 @@ export class WorkspaceRegistry {
       root: workspace.root,
       mode: workspace.mode,
       todos,
+      reportMode,
     });
   }
 
@@ -460,7 +470,6 @@ export class WorkspaceRegistry {
       sourceRoot: input.sourceRoot,
       worktree: input.worktree,
       ...this.loadSkillsForWorkspace(input.root),
-      agentProfiles: await loadLocalAgentProfiles(this.config, input.root),
       activatedSkillDirs: new Set(),
     };
 

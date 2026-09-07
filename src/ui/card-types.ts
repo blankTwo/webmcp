@@ -64,20 +64,6 @@ export interface ToolResultCard {
     description?: string;
     path?: string;
   }>;
-  agentProviders?: Array<{
-    name?: string;
-    available?: boolean;
-    reason?: string;
-  }>;
-  agents?: Array<{
-    name?: string;
-    description?: string;
-    provider?: string;
-    model?: string;
-    thinking?: string;
-    providerAvailable?: boolean;
-    providerUnavailableReason?: string;
-  }>;
   instruction?: string;
 }
 
@@ -168,13 +154,9 @@ export function isExpandableCard(card: ToolResultCard): boolean {
     return (
       Number(card.summary?.agentsFiles ?? 0) > 0 ||
       Number(card.summary?.skills ?? 0) > 0 ||
-      Number(card.summary?.agentProviders ?? 0) > 0 ||
-      Number(card.summary?.agents ?? 0) > 0 ||
       Boolean(card.agentsFiles?.length) ||
       Boolean(card.availableAgentsFiles?.length) ||
       Boolean(card.skills?.length) ||
-      Boolean(card.agentProviders?.length) ||
-      Boolean(card.agents?.length) ||
       Boolean(card.worktree) ||
       Boolean(card.instruction)
     );

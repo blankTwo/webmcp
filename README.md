@@ -133,14 +133,14 @@ and show you what changed.
 
 DevSpace gives ChatGPT tools to:
 
-- read, write, edit, move, and rename files inside the opened workspace
-- search code and inspect directories with dedicated read-only tools
+- read one or several files, write or edit files, and apply multi-file patches inside the opened workspace
+- explore source structure with `code_explore`, then search code and inspect directories with dedicated read-only tools
+- lazily discover skills with `skills_list` and load only the matching skill with `skill_read`
 - run one-shot shell commands or managed long-running/interactive processes
 - use isolated Git worktrees for parallel coding sessions
 - follow project instructions from `AGENTS.md` and `CLAUDE.md`
-- discover local agent skills from your skill folders
-- optionally run, inspect, and cancel configured local subagents through native MCP tools
-- show tool cards and optional change summaries in ChatGPT Apps-compatible hosts
+- discover local skills from your skill folders
+- keep rich tool details in DevSpace Console without adding per-tool iframe cards to ChatGPT
 
 ## Mental Model
 

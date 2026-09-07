@@ -1,8 +1,8 @@
 # DevSpace
 
-DevSpace is a local development execution layer for MCP hosts such as ChatGPT and Claude. It gives a remote host workspace-scoped tools for reading, editing, searching, running commands, managing Git worktrees, reviewing changes, and coordinating bounded subagents on the user's machine.
+DevSpace is a local development execution layer for ChatGPT. It gives the host workspace-scoped tools for reading, editing, searching, running commands, managing Git worktrees, and reviewing changes on the user's machine.
 
-Pi's SDK currently provides mature local coding primitives. DevSpace wraps those primitives in a Streamable HTTP MCP server and adds the product-specific boundaries around them: approved roots, workspace state, instructions, process sessions, worktrees, artifacts, review checkpoints, widgets, and subagent execution.
+Pi's SDK currently provides mature local coding primitives. DevSpace wraps those primitives in a Streamable HTTP MCP server and adds the product-specific boundaries around them: approved roots, workspace state, instructions, process sessions, worktrees, artifacts, review checkpoints, and widgets.
 
 DevSpace owns tooling mechanics. The model receives only meaningful and actionable choices. The user sees outcomes. Tool defination should not leak internal implementation or it shoudn't be giving unwanted options to model to choose from if tooling can handle this.
 
@@ -13,7 +13,6 @@ These ideas should stay true as the project evolves:
 1. **The host is the orchestrator.** DevSpace exposes clear capabilities and execution state. It should not hide the workflow inside an opaque, uninspectable agent loop.
 2. **Everything happens in a workspace.** A workspace represents one local project directory or worktree plus the instructions and state accumulated while operating in it.
 3. **Local authority stays explicit.** DevSpace runs with access to the user's machine. Roots, paths, commands, processes, credentials, and destructive operations must be treated as product boundaries.
-4. **Subagents are bounded workers.** A subagent should have an explicit task, profile, working context, lifecycle, and result that the host can inspect and coordinate.
 5. **Adapters stay at the edges.** Pi, MCP hosts, and model providers each have their own terminology and capabilities. Provider-specific behavior should not become the core domain model.
 6. **Prefer composable primitives.** Build a small set of reliable operations that can be combined into larger workflows instead of baking every workflow into the server.
 
@@ -29,8 +28,6 @@ These ideas should stay true as the project evolves:
 - **Tool surface** — the tools exposed by a configured mode, such as minimal, full, or Codex-compatible.
 - **Process session** — a long-running command tracked for later input, output, or termination.
 - **Instruction file** — an `AGENTS.md` or `CLAUDE.md` discovered while navigating a workspace.
-- **Subagent** — a bounded model invocation delegated and coordinated by the host.
-- **Agent profile** — the model, provider, tools, and instructions used for a subagent.
 - **Artifact** — an output surfaced for the host or user to inspect.
 - **Review checkpoint** — stored state representing a coherent set of changes.
 - **Widget** — host-rendered UI/Cards attached to an MCP response.
@@ -75,7 +72,6 @@ When changing a cross-cutting concept, check every surface it actually reaches:
 - workspace lifecycle and instruction loading;
 - allowed-root and path-containment behavior;
 - checkout and worktree modes;
-- process and subagent lifecycle;
 - tool-surface filtering;
 - widgets, artifacts, and review checkpoints;
 - persistence and migrations;
@@ -98,7 +94,6 @@ For UI changes, include before/after images and a short interaction video when b
 - `src/roots.ts` — allowed roots and path containment.
 - `src/process-sessions.ts` — long-running process lifecycle.
 - `src/git.ts` and `src/git-worktrees.ts` — Git and worktree operations.
-- `src/local-agent-*.ts` — subagent configuration, providers, and execution.
 - `src/artifact-*.ts` and `src/incoming-artifacts.ts` — artifact handling.
 - `src/review-checkpoints.ts` — persisted change-review checkpoints.
 - `src/ui/` — MCP widgets.
@@ -111,7 +106,6 @@ Start at the boundary named by the problem and follow the data. Keep policy in D
 
 - Prefer explicit lifecycle and state over hidden autonomy.
 - Make tasks, inputs, outputs, failures, and ownership inspectable.
-- Keep subagent execution composable and independently testable.
 - Preserve host and provider data unless DevSpace has a concrete reason to normalize it.
 - Add compatibility behavior only for an identified consumer with a real upgrade path.
 - Reuse glossary terms in schemas, types, documentation, and errors.

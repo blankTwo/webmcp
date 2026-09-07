@@ -7,18 +7,9 @@ import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
 import { loadConfig, type ServerConfig } from "./config.js";
-import { formatLocalAgentProviderAvailabilitySummary } from "./local-agent-availability.js";
-import { parseLocalAgentRunArgs } from "./local-agent-targets.js";
 import {
-  executeLocalAgentWorker,
-  startLocalAgentSession,
-} from "./local-agent-service.js";
-import { createLocalAgentStore, type LocalAgentRecord } from "./local-agent-store.js";
-import {
-  ensureDevspaceDefaultSkills,
   generateOwnerToken,
   loadDevspaceFiles,
-  resolveSubagentsFlag,
   writeDevspaceAuth,
   writeDevspaceConfig,
   type DevspaceUserConfig,
@@ -32,7 +23,7 @@ import {
 } from "./runtime-status.js";
 import { DEVSPACE_NODE_RANGE, DEVSPACE_VERSION } from "./version.js";
 
-type Command = "serve" | "init" | "status" | "restart" | "doctor" | "config" | "agents" | "help" | "version";
+type Command = "serve" | "init" | "status" | "restart" | "doctor" | "config" | "help" | "version";
 const require = createRequire(import.meta.url);
 
 async function main(argv: string[]): Promise<void> {
@@ -60,9 +51,6 @@ async function main(argv: string[]): Promise<void> {
     case "config":
       runConfigCommand(args);
       return;
-    case "agents":
-      await runAgentsCommand(args);
-      return;
     case "help":
       printHelp();
       return;
@@ -73,12 +61,12 @@ async function main(argv: string[]): Promise<void> {
 }
 
 function commandRequiresSupportedNode(command: Command): boolean {
-  return command === "serve" || command === "restart" || command === "agents";
+  return command === "serve" || command === "restart";
 }
 
 function normalizeCommand(command: string | undefined): Command {
   if (!command || command === "serve" || command === "start") return "serve";
-  if (command === "init" || command === "status" || command === "restart" || command === "doctor" || command === "config" || command === "agents") return command;
+  if (command === "init" || command === "status" || command === "restart" || command === "doctor" || command === "config") return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   if (command === "version" || command === "--version" || command === "-v") return "version";
   throw new Error(`Unknown command: ${command}`);
@@ -161,7 +149,6 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
       port,
       allowedRoots,
       publicBaseUrl,
-      subagents: resolveSubagentsFlag(files.config),
     };
     const auth = {
       ownerToken: files.auth.ownerToken ?? generateOwnerToken(),
@@ -169,12 +156,10 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
 
     const configPath = writeDevspaceConfig(config);
     const authPath = writeDevspaceAuth(auth);
-    const seededSkillPaths = config.subagents ? ensureDevspaceDefaultSkills() : [];
 
     const lines = [
       `Config: ${configPath}`,
       `Auth: ${authPath}`,
-      ...seededSkillPaths.map((path) => `Default skill: ${path}`),
       `Local MCP URL: http://${config.host}:${config.port}/mcp`,
       ...(publicBaseUrl ? [`Public MCP URL: ${publicBaseUrl}/mcp`] : []),
     ];
@@ -213,7 +198,7 @@ async function serve(): Promise<void> {
 
   const { createServer } = await import("./server.js");
   const config = loadConfig();
-  const { app, close, localAgentProviders } = createServer(config);
+  const { app, close } = createServer(config);
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(`devspace listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
@@ -224,9 +209,6 @@ async function serve(): Promise<void> {
     }
     console.log("auth: Owner password approval required");
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
-    if (config.subagents) {
-      console.log(`subagent providers: ${formatLocalAgentProviderAvailabilitySummary(localAgentProviders)}`);
-    }
   });
 
   let shuttingDown = false;
@@ -257,7 +239,6 @@ async function runStatus(): Promise<void> {
     console.log(`Configured roots: ${config.allowedRoots.join(", ")}`);
     console.log(`Tool mode: ${config.toolMode}`);
     console.log(`Widgets: ${config.widgets}`);
-    console.log(`Subagents: ${config.subagents ? "enabled" : "disabled"}`);
     return;
   }
 
@@ -327,7 +308,6 @@ async function runDoctor(): Promise<void> {
     console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
     console.log(`Tool mode: ${config.toolMode}`);
     console.log(`Widgets: ${config.widgets}`);
-    console.log(`Subagents: ${config.subagents ? "enabled" : "disabled"}`);
     const runtime = await fetchRuntimeStatus(config);
     if (runtime) {
       console.log(`Server: running (PID ${runtime.pid})`);
@@ -356,7 +336,6 @@ function printRuntimeStatus(runtime: DevSpaceRuntimeStatus): void {
   console.log(`Allowed hosts: ${runtime.allowedHosts.join(", ")}`);
   console.log(`Tool mode: ${runtime.toolMode}`);
   console.log(`Widgets: ${runtime.widgets}`);
-  console.log(`Subagents: ${runtime.subagents ? "enabled" : "disabled"}`);
   console.log(`Artifacts: ${runtime.artifactsEnabled ? "enabled" : "disabled"}`);
   console.log(`State dir: ${runtime.stateDir}`);
   console.log(`Worktree dir: ${runtime.worktreeRoot}`);
@@ -498,9 +477,6 @@ function printHelp(): void {
       "  devspace config get      Print persisted config",
       "  devspace config set publicBaseUrl <url|null>",
       "  devspace config set allowedRoots <root1,root2,...>",
-      "  devspace agents ls       List subagent sessions",
-      "  devspace agents run <profile-or-provider-or-id> [--model <model>] <prompt>",
-      "  devspace agents show <id>",
       "  devspace -v, --version   Print the installed version",
       "",
       "For temporary tunnels:",
@@ -509,6 +485,7 @@ function printHelp(): void {
   );
 }
 
+/* Removed local-subagent CLI implementation.
 async function runAgentsCommand(args: string[]): Promise<void> {
   const [subcommand, ...rest] = args;
   switch (subcommand) {
@@ -635,6 +612,7 @@ function formatAgentLine(agent: Pick<
   return `${agent.id} ${agent.status} ${agent.profileName} ${agent.provider}${model}${thinking}`;
 }
 
+*/
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }

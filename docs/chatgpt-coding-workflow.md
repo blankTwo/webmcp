@@ -14,20 +14,16 @@ ChatGPT should call `open_workspace` once for a project folder:
 }
 ```
 
-The result includes a `workspaceId`. All later file, search, edit, show-changes,
-and shell calls should reuse that same `workspaceId`.
+The result includes a `workspaceId`, but ChatGPT conversations are also bound to
+the opened workspace server-side. On hosts that provide conversation metadata,
+subsequent DevSpace tools should normally omit `workspaceId`; DevSpace resolves
+the current workspace from that conversation binding. Passing the explicit ID
+remains supported for compatibility and disambiguation.
 
-ChatGPT may support automatic checkout recovery through optional host
-conversation metadata. This is an OpenAI-host adapter detail, not a standard MCP
-conversation field. When that optional context is available, opening the same
-checkout project again in the same conversation can continue in the existing
-workspace, and the context already provided for that reused checkout is not
-repeated. The portable workflow remains the same: keep using the `workspaceId`
-returned by `open_workspace` for later operations. Hosts without supported
-conversation context receive a normal new workspace and continue with that
-explicit `workspaceId` workflow.
-The model receives actionable workspace instructions; automatic-reuse
-bookkeeping is not a model-facing choice.
+Conversation binding is an OpenAI-host adapter detail, not a standard MCP
+conversation field. Hosts without supported conversation metadata continue to
+use the explicit `workspaceId` workflow. Reopening the same checkout in one
+conversation reuses its persisted workspace without repeating bootstrap context.
 
 Worktree mode is deliberately different: every call creates a new managed
 worktree and a new workspace session with complete context, even for the same
@@ -80,10 +76,10 @@ Managed worktrees are created under:
 Worktree mode requires a Git repository with at least one commit. It starts from
 `HEAD` unless `baseRef` is provided.
 
-Each worktree-mode call creates a new managed worktree and returns a new
-`workspaceId`. Reuse that ID for work inside that worktree; call
-`open_workspace` in worktree mode again only when another isolated worktree is
-actually required.
+Each worktree-mode call creates a new managed worktree and makes it the current
+workspace binding for that conversation. The returned `workspaceId` remains
+available for explicit-host compatibility. Call `open_workspace` in worktree
+mode again only when another isolated worktree is actually required.
 
 Uncommitted source checkout changes are not copied into the managed worktree.
 DevSpace reports when the source checkout was dirty so the model can decide how
@@ -116,46 +112,30 @@ DevSpace discovers standard Agent Skills from:
 
 It also keeps compatibility with:
 
-- the bundled `subagent-delegation` skill when `DEVSPACE_SUBAGENTS=1`, unless `~/.devspace/skills/subagent-delegation/SKILL.md` exists
 - `DEVSPACE_AGENT_DIR/skills`, defaulting to `~/.codex/skills`
 - additional paths from `DEVSPACE_SKILL_PATHS`
 
-When Subagents are enabled, DevSpace discovers agent profiles
-from `~/.devspace/agents/*.md` and project `.devspace/agents/*.md`.
-`open_workspace` exposes a compact catalog with profile names, descriptions,
-providers, and optional models/thinking levels so the model can choose a configured agent
-without seeing provider-specific launch details.
-
-Example profiles are packaged under `examples/agents/` for users who want
-starter templates. Copy or adapt them into one of the active profile directories
-before use.
-
 Legacy project paths such as `.pi/skills` can be added through `DEVSPACE_SKILL_PATHS` when needed.
 
-When `open_workspace` returns matching skills, the model should read the
-advertised `SKILL.md` before following that skill.
+`open_workspace` no longer injects the full skill catalog into every coding
+conversation. When skill guidance may be relevant, call `skills_list`, then load
+only the matching skill with `skill_read`. After a skill is activated, files
+inside that skill directory may be read as needed.
 
-Skill paths may be outside the workspace. DevSpace only permits reading:
-
-- advertised `SKILL.md` files
-- files under a skill directory after that skill's `SKILL.md` has been read
-
-Set `DEVSPACE_SKILLS=0` to hide skills from workspace output. Set
-`DEVSPACE_SUBAGENTS=1` to expose the experimental subagent catalog plus native
-`run_agent`, `get_agent`, `list_agents`, and `cancel_agent` tools. The
-`subagent-delegation` skill teaches the model when delegation is appropriate;
-normal MCP delegation should use those native tools rather than shelling out to
-the `devspace agents` CLI.
+Set `DEVSPACE_SKILLS=0` to hide skills from workspace output.
 
 ## Tool Names
 
 By default DevSpace runs in `DEVSPACE_TOOL_MODE=full` and exposes:
 
 - `open_workspace`
-- `read`
+- `read` (one or several files)
 - `move_file`
 - `write`
 - `edit`
+- `apply_patch` (multi-file)
+- `code_explore`
+- `skills_list` / `skill_read` when skills are enabled
 - `grep`
 - `glob`
 - `ls`
@@ -180,9 +160,11 @@ The experimental Codex-style surface is enabled with
 `DEVSPACE_TOOL_MODE=codex`. It exposes:
 
 - `open_workspace`
-- `read`
+- `read` (one or several files)
 - `move_file`
 - `apply_patch`
+- `code_explore`
+- `skills_list` / `skill_read` when skills are enabled
 - `exec_command`
 - `write_stdin`
 - `list_processes`

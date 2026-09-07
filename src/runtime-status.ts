@@ -31,7 +31,6 @@ export interface DevSpaceRuntimeStatus extends DevSpaceHealth {
   artifactMaxFileBytes: number;
   skillsEnabled: boolean;
   skillPaths: string[];
-  subagents: boolean;
   agentDir: string;
   oauth: {
     accessTokenTtlSeconds: number;
@@ -78,7 +77,6 @@ export function createRuntimeStatus(
     artifactMaxFileBytes: config.artifactMaxFileBytes,
     skillsEnabled: config.skillsEnabled,
     skillPaths: [...config.skillPaths],
-    subagents: config.subagents,
     agentDir: config.agentDir,
     oauth: {
       accessTokenTtlSeconds: config.oauth.accessTokenTtlSeconds,
@@ -110,7 +108,6 @@ export function restartEnvironment(
     DEVSPACE_ARTIFACT_MAX_FILE_BYTES: String(status.artifactMaxFileBytes),
     DEVSPACE_SKILLS: status.skillsEnabled ? "1" : "0",
     DEVSPACE_SKILL_PATHS: status.skillPaths.join(","),
-    DEVSPACE_SUBAGENTS: status.subagents ? "1" : "0",
     DEVSPACE_AGENT_DIR: status.agentDir,
     DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS: String(status.oauth.accessTokenTtlSeconds),
     DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS: String(status.oauth.refreshTokenTtlSeconds),

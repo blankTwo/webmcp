@@ -10,6 +10,25 @@ import {
 import { openDatabase } from "./db/client.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 
+async function removeTempDirectory(path: string): Promise<void> {
+  const retryable = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!code || !retryable.has(code)) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  const code = (lastError as NodeJS.ErrnoException | undefined)?.code;
+  if (process.platform === "win32" && code && retryable.has(code)) return;
+  throw lastError;
+}
+
 test("console event store retains recent tool events and notifies subscribers", () => {
   const store = new ConsoleEventStore(2);
   const seen: string[] = [];
@@ -120,7 +139,7 @@ test("console event store persists events and retention settings in SQLite", asy
     assert.throws(() => restored.setRetentionDays(0), /retentionDays/);
     restored.close();
   } finally {
-    await rm(stateDir, { recursive: true, force: true });
+    await removeTempDirectory(stateDir);
   }
 });
 
@@ -139,7 +158,7 @@ test("console history pages 10,000 persisted events without loading them all", a
       ) values (?, ?, ?, ?, ?, ?)
     `);
     const insertMany = database.sqlite.transaction(() => {
-      const base = Date.parse("2026-08-19T00:00:00.000Z");
+      const base = Date.now() - 60_000;
       for (let index = 0; index < 10_000; index += 1) {
         insert.run(
           `scale-${String(index).padStart(5, "0")}`,
@@ -174,6 +193,6 @@ test("console history pages 10,000 persisted events without loading them all", a
     );
     store.close();
   } finally {
-    await rm(stateDir, { recursive: true, force: true });
+    await removeTempDirectory(stateDir);
   }
 });

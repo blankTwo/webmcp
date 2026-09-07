@@ -1,0 +1,37 @@
+DevSpace MCP Stateless 性能优化 - 重构验收摘要
+================================================
+
+日期：2026-09-07
+
+完成：
+- tools/list 缓存移动到 OAuth + resource 校验之后
+- 缓存只保存 result，不缓存旧 JSON-RPC request id
+- cache hit 使用当前请求 id 重新包装 response
+- 缓存键使用 SHA-256，包含 access token / protocol version / params
+- 仅合法单条 tools/list 请求进入快速路径
+- 并发处理器重构为明确的 ConcurrentRequestLimiter
+- limiter acquire/release 原子化
+- optimizer status 增加 hits / misses / writes
+- server-stateless 回归覆盖 cache hit、request id、401 和统计
+- benchmark.sh 改为强制使用真实 OAuth access token
+- benchmark 出现非 2xx / errors / timeouts / mismatches 会失败
+
+验证：
+- npm run typecheck: PASS
+- npm run build: PASS
+- server-stateless.test.ts: PASS
+- full npm test: PASS（测试运行时关闭本机全局 Git GPG 自动签名）
+
+有效 OAuth 本机 benchmark：
+- Cached tools/list, 10 connections, 10s
+- p50: 9 ms
+- p99: 18 ms
+- avg: 9.33 ms
+- throughput: 1017.1 req/s
+- requests: 10171
+- non-2xx: 0
+- errors: 0
+- timeouts: 0
+
+旧的 p50 2ms / p99 5ms / 25x / 24x / GC -30% 数据不再作为验收结论。
+GC 需要独立 profiler 前后对照后再判断。
