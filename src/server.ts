@@ -1,12 +1,12 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { realpath } from "node:fs/promises";
+import { readFile as readTextFile, realpath } from "node:fs/promises";
+import { extname, join as joinPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
 import express from "express";
 import type { Request, Response } from "express";
@@ -17,6 +17,7 @@ import {
   registerArtifactTools,
 } from "./artifact-tools.js";
 import { loadConfig, type ServerConfig } from "./config.js";
+import { McpRequestOptimizer, ConcurrentMcpHandler } from "./mcp-request-optimizer.js";
 import {
   createOpenAIIncomingArtifactAdapter,
   type IncomingArtifactAdapter,
@@ -26,7 +27,6 @@ import {
   requestIp,
   requestPath,
   commandPreview,
-  sessionIdPrefix,
 } from "./logger.js";
 import {
   editFileTool,
@@ -38,10 +38,6 @@ import {
   writeFileTool,
 } from "./pi-tools.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
-import {
-  McpSessionRegistry,
-  type McpSessionCloseResult,
-} from "./mcp-sessions.js";
 import { ProcessSessionManager, type ProcessSnapshot } from "./process-sessions.js";
 import { openAiConversationScopeId } from "./request-meta.js";
 import { moveWorkspacePath } from "./move-file.js";
@@ -55,7 +51,7 @@ import {
   normalizeResumeState,
   type WorkspaceResumeStateInput,
 } from "./workspace-memory.js";
-import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
+import { formatAgentsPath, WorkspaceRegistry, type Workspace } from "./workspaces.js";
 import { summarizeLocalAgentProfile } from "./local-agent-profiles.js";
 import {
   cancelLocalAgentSession,
@@ -80,13 +76,9 @@ import {
   type ConsoleToolUi,
 } from "./console-events.js";
 
-type Transport = StreamableHTTPServerTransport;
-// MCP clients can reconnect without closing the previous transport. Bound stale
-// session retention so abandoned MCP servers do not accumulate for the life of the process.
-const MCP_SESSION_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1_000;
-const MCP_SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1_000;
 const LEGACY_CHECKPOINT_PREFIX = "checkpoint";
 const workspaceTodoStatusSchema = z.enum(["pending", "in_progress", "completed"]);
+const workspaceTodoReportModeSchema = z.enum(["each", "summary"]);
 const workspaceTodoInputSchema = z.object({
   id: z.string().min(1).optional(),
   content: z.string().min(1),
@@ -198,10 +190,36 @@ const toolNames = {
   glob: "glob",
   ls: "ls",
   shell: "bash",
+  applyPatch: "apply_patch",
+  codeExplore: "code_explore",
+  skillsList: "skills_list",
+  skillRead: "skill_read",
 } as const;
 
 const workspaceIdDescription =
-  "Workspace to use. Reuse the current project's workspaceId.";
+  "Optional after open_workspace. Omit it to use the workspace bound to the current ChatGPT conversation; pass it explicitly for compatibility or when disambiguation is required.";
+
+function optionalWorkspaceIdSchema() {
+  return z.string().optional().describe(workspaceIdDescription);
+}
+
+function resolveToolWorkspace(
+  workspaces: WorkspaceRegistry,
+  workspaceId: string | undefined,
+  meta: unknown,
+): Workspace {
+  if (workspaceId) return workspaces.getWorkspace(workspaceId);
+
+  const conversationScopeId = openAiConversationScopeId(meta);
+  const workspace = conversationScopeId
+    ? workspaces.getConversationWorkspace(conversationScopeId)
+    : undefined;
+  if (workspace) return workspace;
+
+  throw new Error(
+    "No workspace is bound to this conversation. Call open_workspace first, or pass workspaceId explicitly.",
+  );
+}
 
 interface ToolLogFields {
   tool: string;
@@ -231,7 +249,7 @@ function serverInstructions(config: ServerConfig): string {
     " Use checkpoint only at meaningful milestones, before switching tasks, or when the user pauses work; do not checkpoint after every tool call. Use history_search only when a previous checkpoint is needed to recover an older decision or detail that is not in the current continuation. Compatibility: if the user says exactly `checkpoint` but this conversation does not expose the checkpoint tool, use the existing bash tool with command `checkpoint` and immediately follow the returned machine instruction without asking the user for more input.";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for file content changes, move_file for explicit moves or renames, exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${memoryInstruction}${subagentInstruction}${artifactInstruction}`;
+    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}.${memoryInstruction}${subagentInstruction}${artifactInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -239,7 +257,7 @@ function serverInstructions(config: ServerConfig): string {
     : `Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. `;
 
   const skills = config.skillsEnabled
-    ? `When ${toolNames.openWorkspace} returns available skills and a task matches a skill, use ${toolNames.read} to read that skill's path before proceeding. Skill paths may be outside the workspace, but ${toolNames.read} only permits advertised SKILL.md files and files under already-loaded skill directories. `
+    ? `When a task may match a skill, use ${toolNames.skillsList} to discover available skills and ${toolNames.skillRead} to load only the matching skill before proceeding. Do not enumerate or preload skills when they are irrelevant. `
     : "";
 
   const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
@@ -248,7 +266,7 @@ function serverInstructions(config: ServerConfig): string {
     ? " Use exec_command for long-running or interactive commands, write_stdin to poll or interact with them, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session."
     : "";
 
-  return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${subagentInstruction}${artifactInstruction}`;
+  return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}Prefer ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${subagentInstruction}${artifactInstruction}`;
 }
 
 function formatVisibleAgent(agent: {
@@ -488,6 +506,33 @@ function textBlock(text: string): ToolContent {
   return { type: "text", text };
 }
 
+const MODEL_READ_MAX_CHARACTERS = 32_000;
+const MODEL_SEARCH_MAX_CHARACTERS = 16_000;
+const MODEL_COMMAND_MAX_CHARACTERS = 16_000;
+const MODEL_ERROR_MAX_CHARACTERS = 8_000;
+const CODE_EXPLORE_EXTENSIONS = new Set([
+  ".c", ".cc", ".cpp", ".cs", ".dart", ".go", ".h", ".hpp", ".java", ".js", ".jsx",
+  ".kt", ".php", ".py", ".rb", ".rs", ".sh", ".sql", ".svelte", ".swift", ".ts", ".tsx", ".vue",
+]);
+const CODE_SYMBOL_PATTERN = /^\s*(?:export\s+)?(?:abstract\s+|final\s+|sealed\s+|static\s+|async\s+)*(class|mixin|enum|extension|typedef|interface|struct|func|function|def|fn)\s+([A-Za-z_][\w]*)/;
+
+function truncateModelText(text: string, maxCharacters: number): { text: string; truncated: boolean } {
+  if (text.length <= maxCharacters) return { text, truncated: false };
+
+  const marker = "\n... model context truncated; narrow the request or continue with offset/limit ...\n";
+  const available = Math.max(0, maxCharacters - marker.length);
+  const head = Math.ceil(available * 0.7);
+  const tail = Math.floor(available * 0.3);
+  return {
+    text: `${text.slice(0, head)}${marker}${text.slice(text.length - tail)}`,
+    truncated: true,
+  };
+}
+
+function boundedModelText(content: ToolContent[], maxCharacters: number): { text: string; truncated: boolean } {
+  return truncateModelText(contentText(content), maxCharacters);
+}
+
 function textSummary(content: ToolContent[]): {
   lines: number;
   characters: number;
@@ -585,7 +630,9 @@ function processToolResponse(
   snapshot: ProcessSnapshot,
   summary: Record<string, unknown>,
 ) {
-  const result = processResult(snapshot);
+  const rawResult = processResult(snapshot);
+  const bounded = truncateModelText(rawResult, MODEL_COMMAND_MAX_CHARACTERS);
+  const result = bounded.text;
   const content = [textBlock(result)];
   return {
     content,
@@ -596,7 +643,7 @@ function processToolResponse(
       exitCode: snapshot.exitCode,
       signal: snapshot.signal,
       wallTimeMs: snapshot.wallTimeMs,
-      outputTruncated: snapshot.outputTruncated,
+      outputTruncated: snapshot.outputTruncated || bounded.truncated,
     },
   };
 }
@@ -614,7 +661,7 @@ function registerManagedProcessTools(
       description:
         `Run a command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, long-running processes, and approved Git metadata writes. ${SHELL_GIT_WRITE_ALLOWANCE}`,
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         cmd: z.string().min(1).describe(`Shell command to execute. ${SHELL_GIT_WRITE_ALLOWANCE}`),
         tty: z
           .boolean()
@@ -644,12 +691,12 @@ function registerManagedProcessTools(
       outputSchema: processOutputSchema(),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, yieldTimeMs, maxOutputTokens }) => {
+    async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, yieldTimeMs, maxOutputTokens }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const cwd = workspaces.resolveWorkingDirectory(workspace, workingDirectory);
       const snapshot = await processSessions.start({
-        workspaceId,
+        workspaceId: workspace.id,
         command: cmd,
         cwd,
         workspaceRoot: workspace.root,
@@ -662,7 +709,7 @@ function registerManagedProcessTools(
 
       logToolCall(config, {
         tool: "exec_command",
-        workspaceId,
+        workspaceId: workspace.id,
         workingDirectory: workingDirectory ?? ".",
         command: cmd,
         commandLength: cmd.length,
@@ -673,7 +720,7 @@ function registerManagedProcessTools(
         exitCode: snapshot.exitCode,
         outputPreview: consoleOutputPreview(snapshot.output),
         consoleUi: consoleToolUi("exec_command", {
-          workspaceId,
+          workspaceId: workspace.id,
           summary: {
             command: cmd,
             workingDirectory: workingDirectory ?? ".",
@@ -685,7 +732,7 @@ function registerManagedProcessTools(
         }),
       });
 
-      return processToolResponse("exec_command", workspaceId, snapshot, {
+      return processToolResponse("exec_command", workspace.id, snapshot, {
         command: cmd,
         workingDirectory: workingDirectory ?? ".",
         running: snapshot.running,
@@ -702,7 +749,7 @@ function registerManagedProcessTools(
       description:
         "Poll or write characters to a process returned by exec_command. Omit chars or pass an empty string to poll. Pass \\u0003 to send Ctrl-C.",
       inputSchema: {
-        workspaceId: z.string().describe("Workspace identifier used to start the process."),
+        workspaceId: optionalWorkspaceIdSchema(),
         sessionId: z.number().describe("Process session identifier returned by exec_command."),
         chars: z.string().optional().describe("Characters to write. Omit or pass an empty string to poll."),
         columns: z.number().int().min(1).max(1_000).optional().describe("Resize a PTY to this width."),
@@ -725,11 +772,11 @@ function registerManagedProcessTools(
       outputSchema: processOutputSchema(),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, sessionId, chars, columns, rows, yieldTimeMs, maxOutputTokens }) => {
+    async ({ workspaceId, sessionId, chars, columns, rows, yieldTimeMs, maxOutputTokens }, { _meta }) => {
       const startedAt = performance.now();
-      workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const snapshot = await processSessions.write({
-        workspaceId,
+        workspaceId: workspace.id,
         sessionId,
         chars,
         columns,
@@ -740,7 +787,7 @@ function registerManagedProcessTools(
 
       logToolCall(config, {
         tool: "write_stdin",
-        workspaceId,
+        workspaceId: workspace.id,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
         sessionId,
@@ -748,7 +795,7 @@ function registerManagedProcessTools(
         exitCode: snapshot.exitCode,
         outputPreview: consoleOutputPreview(snapshot.output),
         consoleUi: consoleToolUi("write_stdin", {
-          workspaceId,
+          workspaceId: workspace.id,
           summary: {
             sessionId,
             charactersWritten: chars?.length ?? 0,
@@ -760,7 +807,7 @@ function registerManagedProcessTools(
         }),
       });
 
-      return processToolResponse("write_stdin", workspaceId, snapshot, {
+      return processToolResponse("write_stdin", workspace.id, snapshot, {
         sessionId,
         charactersWritten: chars?.length ?? 0,
         running: snapshot.running,
@@ -777,7 +824,7 @@ function registerManagedProcessTools(
       description:
         "List managed process sessions for a workspace. Includes recently completed sessions by default so the agent can inspect what just finished.",
       inputSchema: {
-        workspaceId: z.string().describe("Workspace identifier whose managed processes should be listed."),
+        workspaceId: optionalWorkspaceIdSchema(),
         includeCompleted: z
           .boolean()
           .optional()
@@ -789,16 +836,16 @@ function registerManagedProcessTools(
       _meta: {},
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, includeCompleted }) => {
+    async ({ workspaceId, includeCompleted }, { _meta }) => {
       const startedAt = performance.now();
-      workspaces.getWorkspace(workspaceId);
-      const processes = processSessions.list(workspaceId, includeCompleted ?? true);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const processes = processSessions.list(workspace.id, includeCompleted ?? true);
       const result = processes.length === 0
         ? "No managed process sessions found."
         : `${processes.length} managed process session${processes.length === 1 ? "" : "s"}.`;
       logToolCall(config, {
         tool: "list_processes",
-        workspaceId,
+        workspaceId: workspace.id,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
       });
@@ -816,7 +863,7 @@ function registerManagedProcessTools(
       description:
         "Get metadata for one managed process session without consuming its buffered output.",
       inputSchema: {
-        workspaceId: z.string().describe("Workspace identifier used to start the process."),
+        workspaceId: optionalWorkspaceIdSchema(),
         sessionId: z.number().int().positive().describe("Managed process session identifier."),
       },
       outputSchema: resultOutputSchema({
@@ -825,16 +872,16 @@ function registerManagedProcessTools(
       _meta: {},
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, sessionId }) => {
+    async ({ workspaceId, sessionId }, { _meta }) => {
       const startedAt = performance.now();
-      workspaces.getWorkspace(workspaceId);
-      const processInfo = processSessions.get(workspaceId, sessionId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const processInfo = processSessions.get(workspace.id, sessionId);
       const result = processInfo.running
         ? `Process session ${sessionId} is running.`
         : `Process session ${sessionId} has completed.`;
       logToolCall(config, {
         tool: "get_process",
-        workspaceId,
+        workspaceId: workspace.id,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
       });
@@ -852,7 +899,7 @@ function registerManagedProcessTools(
       description:
         "Terminate a managed process session. DevSpace first requests graceful termination, waits briefly, then force-kills the process tree if it is still running.",
       inputSchema: {
-        workspaceId: z.string().describe("Workspace identifier used to start the process."),
+        workspaceId: optionalWorkspaceIdSchema(),
         sessionId: z.number().int().positive().describe("Process session identifier returned by exec_command."),
         gracePeriodMs: z
           .number()
@@ -871,16 +918,16 @@ function registerManagedProcessTools(
       _meta: {},
       annotations: PROCESS_KILL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, sessionId, gracePeriodMs }) => {
+    async ({ workspaceId, sessionId, gracePeriodMs }, { _meta }) => {
       const startedAt = performance.now();
-      workspaces.getWorkspace(workspaceId);
-      const processInfo = await processSessions.terminate(workspaceId, sessionId, gracePeriodMs);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const processInfo = await processSessions.terminate(workspace.id, sessionId, gracePeriodMs);
       const result = processInfo.running
         ? `Force termination was sent to process session ${sessionId}, but it still reports as running.`
         : `Process session ${sessionId} terminated.`;
       logToolCall(config, {
         tool: "kill_process",
-        workspaceId,
+        workspaceId: workspace.id,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
       });
@@ -941,7 +988,7 @@ function registerLocalAgentTools(
       description:
         "Start a configured subagent profile or built-in provider in a workspace, or send a follow-up to an existing agent id. Returns immediately with a persistent agent session; use get_agent to read the final response.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         target: z.string().min(1).describe("Subagent profile name, built-in provider name, or existing agent id."),
         prompt: z.string().min(1).describe("Self-contained task for the subagent."),
         model: z.string().min(1).optional().describe("Optional provider-specific model override."),
@@ -951,11 +998,11 @@ function registerLocalAgentTools(
       _meta: {},
       annotations: AGENT_RUN_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, target, prompt, model, thinking }) => {
+    async ({ workspaceId, target, prompt, model, thinking }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const agent = await startLocalAgentSession(config, store, {
-        workspaceId,
+        workspaceId: workspace.id,
         workspaceRoot: workspace.root,
         target,
         prompt,
@@ -966,7 +1013,7 @@ function registerLocalAgentTools(
       const result = `Started subagent ${agent.id} (${agent.profileName}, ${agent.provider}).`;
       logToolCall(config, {
         tool: "run_agent",
-        workspaceId,
+        workspaceId: workspace.id,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
       });
@@ -983,17 +1030,17 @@ function registerLocalAgentTools(
       title: "Get subagent",
       description: "Read the latest state and response of one subagent session in the selected workspace.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         agentId: z.string().min(1).describe("Agent id returned by run_agent."),
       },
       outputSchema: resultOutputSchema({ agent: localAgentSessionOutputSchema }),
       _meta: {},
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, agentId }) => {
+    async ({ workspaceId, agentId }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
-      const agent = getLocalAgentSession(store, workspaceId, workspace.root, agentId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const agent = getLocalAgentSession(store, workspace.id, workspace.root, agentId);
       const output = localAgentSessionOutput(agent);
       const result = agent.latestResponse
         ? `${agent.id} is ${agent.status}.\n${agent.latestResponse}`
@@ -1002,7 +1049,7 @@ function registerLocalAgentTools(
           : `${agent.id} is ${agent.status}.`;
       logToolCall(config, {
         tool: "get_agent",
-        workspaceId,
+        workspaceId: workspace.id,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
       });
@@ -1019,22 +1066,22 @@ function registerLocalAgentTools(
       title: "List subagents",
       description: "List persistent subagent sessions belonging to the selected workspace.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
       },
       outputSchema: resultOutputSchema({ agents: z.array(localAgentSessionSummaryOutputSchema) }),
       _meta: {},
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId }) => {
+    async ({ workspaceId }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
-      const agents = listLocalAgentSessions(store, workspaceId, workspace.root).map(localAgentSessionSummary);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const agents = listLocalAgentSessions(store, workspace.id, workspace.root).map(localAgentSessionSummary);
       const result = agents.length === 0
         ? "No subagent sessions found for this workspace."
         : `Found ${agents.length} subagent session${agents.length === 1 ? "" : "s"}.`;
       logToolCall(config, {
         tool: "list_agents",
-        workspaceId,
+        workspaceId: workspace.id,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
       });
@@ -1051,24 +1098,24 @@ function registerLocalAgentTools(
       title: "Cancel subagent",
       description: "Terminate a running subagent worker and its child process tree in the selected workspace.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         agentId: z.string().min(1).describe("Agent id returned by run_agent."),
       },
       outputSchema: resultOutputSchema({ agent: localAgentSessionOutputSchema }),
       _meta: {},
       annotations: AGENT_CANCEL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, agentId }) => {
+    async ({ workspaceId, agentId }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
-      const agent = cancelLocalAgentSession(store, workspaceId, workspace.root, agentId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const agent = cancelLocalAgentSession(store, workspace.id, workspace.root, agentId);
       const output = localAgentSessionOutput(agent);
       const result = agent.status === "stopped"
         ? `Stopped subagent ${agent.id}.`
         : `Subagent ${agent.id} is already ${agent.status}.`;
       logToolCall(config, {
         tool: "cancel_agent",
-        workspaceId,
+        workspaceId: workspace.id,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
       });
@@ -1180,10 +1227,9 @@ export function createMcpServer(
           .optional(),
         agentsFiles: z.array(workspaceAgentsFileOutputSchema).optional(),
         availableAgentsFiles: z.array(workspaceAvailableAgentsFileOutputSchema).optional(),
-        skills: z.array(workspaceSkillOutputSchema).optional(),
+        skillCount: z.number().int().nonnegative().optional(),
         agentProviders: z.array(workspaceLocalAgentProviderOutputSchema).optional(),
         agents: z.array(workspaceLocalAgentOutputSchema).optional(),
-        skillDiagnostics: z.array(z.unknown()).optional(),
         continuation: workspaceContinuationOutputSchema.optional(),
         instruction: z.string(),
       },
@@ -1240,22 +1286,21 @@ export function createMcpServer(
       const cardAvailableAgentsFiles = availableAgentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
       }));
-      const visibleSkills = includeBootstrapContext ? cardSkills : [];
       const visibleAgentProviders = includeBootstrapContext ? cardAgentProviders : [];
       const visibleAgents = includeBootstrapContext ? cardAgents : [];
       const loadedAgentsFiles = includeBootstrapContext ? cardAgentsFiles : [];
       const availableAgentsFileOutputs = includeBootstrapContext ? cardAvailableAgentsFiles : [];
       const cardInstruction = config.skillsEnabled
-        ? "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. When a task matches an available skill in skills, read its path before proceeding."
-        : "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.";
+        ? "This conversation is now bound to this workspace; subsequent tools should normally omit workspaceId. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. Use skills_list only when skill discovery is relevant, then skill_read for the matching skill."
+        : "This conversation is now bound to this workspace; subsequent tools should normally omit workspaceId. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.";
       const instruction = workspaceReused
         ? [
             `Workspace already open as ${workspace.id}.`,
-            "Continue with this workspaceId.",
-            "Keep following the project instructions, nested instruction files, skills, agent profiles, and diagnostics already provided for this workspace.",
+            "Continue with the workspace already bound to this conversation.",
+            "Keep following the project instructions and use lazy capability discovery when needed.",
           ].join("\n\n")
         : workspace.mode === "worktree"
-          ? "Use this workspaceId for subsequent work in this isolated worktree. Keep reusing it while working in this worktree. Follow the project instructions, nested instruction files, skills, agent profiles, and diagnostics returned for it."
+          ? "This conversation is now bound to this isolated worktree. Follow the project instructions and use lazy capability discovery when needed."
           : cardInstruction;
       const resultContent: ToolContent[] = [
         {
@@ -1274,8 +1319,8 @@ export function createMcpServer(
             availableAgentsFileOutputs.length > 0
               ? `Available nested instructions: ${availableAgentsFileOutputs.map((file) => file.path).join(", ")}`
               : undefined,
-            visibleSkills.length > 0
-              ? `Available skills: ${visibleSkills.map((skill) => skill.name).join(", ")}`
+            config.skillsEnabled && includeBootstrapContext && cardSkills.length > 0
+              ? `${cardSkills.length} skill(s) available; use skills_list only if this task needs one.`
               : undefined,
             visibleAgentProviders.some((provider) => provider.available)
               ? `Available subagent providers: ${visibleAgentProviders.filter((provider) => provider.available).map((provider) => provider.name).join(", ")}`
@@ -1342,10 +1387,9 @@ export function createMcpServer(
             ? {
                 agentsFiles: loadedAgentsFiles,
                 availableAgentsFiles: availableAgentsFileOutputs,
-                skills: visibleSkills,
+                skillCount: cardSkills.length,
                 agentProviders: visibleAgentProviders,
                 agents: visibleAgents,
-                skillDiagnostics: workspace.skillDiagnostics,
               }
             : {}),
           ...(continuation ? { continuation } : {}),
@@ -1355,6 +1399,125 @@ export function createMcpServer(
     },
   );
 
+  if (config.skillsEnabled) {
+    server.registerTool(
+      toolNames.skillsList,
+      {
+        title: "List workspace skills",
+        description:
+          "List skills available to the workspace. Call this only when the current task may match a skill; use skill_read to load one matching skill.",
+        inputSchema: {
+          workspaceId: optionalWorkspaceIdSchema(),
+        },
+        outputSchema: resultOutputSchema({
+          count: z.number().int().nonnegative(),
+          skills: z.array(workspaceSkillOutputSchema),
+        }),
+        annotations: { readOnlyHint: true },
+      },
+      async ({ workspaceId }, { _meta }) => {
+        const startedAt = performance.now();
+        const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+        const skills = workspace.skills
+          .filter((skill) => !skill.disableModelInvocation)
+          .map((skill) => ({
+            name: skill.name,
+            description: skill.description,
+            path: formatPathForPrompt(skill.filePath),
+          }));
+        const result = skills.length > 0
+          ? skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")
+          : "No model-invokable skills are available for this workspace.";
+        logToolCall(config, {
+          tool: toolNames.skillsList,
+          workspaceId: workspace.id,
+          path: workspace.root,
+          success: true,
+          durationMs: Math.round(performance.now() - startedAt),
+          consoleUi: consoleToolUi(toolNames.skillsList, {
+            workspaceId: workspace.id,
+            path: workspace.root,
+            summary: { count: skills.length },
+          }),
+        });
+        return {
+          content: [textBlock(result)],
+          structuredContent: { result, count: skills.length, skills },
+        };
+      },
+    );
+
+    server.registerTool(
+      toolNames.skillRead,
+      {
+        title: "Read workspace skill",
+        description:
+          "Read the full SKILL.md body for one skill returned by skills_list. Do not load unrelated skills.",
+        inputSchema: {
+          workspaceId: optionalWorkspaceIdSchema(),
+          name: z.string().min(1).describe("Skill name returned by skills_list."),
+        },
+        outputSchema: resultOutputSchema({
+          name: z.string(),
+          description: z.string(),
+          path: z.string(),
+        }),
+        annotations: { readOnlyHint: true },
+      },
+      async ({ workspaceId, name }, { _meta }) => {
+        const startedAt = performance.now();
+        const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+        const skill = workspace.skills.find(
+          (candidate) => candidate.name === name && !candidate.disableModelInvocation,
+        );
+        if (!skill) {
+          const message = `Unknown or unavailable skill: ${name}. Use skills_list first.`;
+          return { isError: true, content: [textBlock(message)] };
+        }
+
+        const readPath = workspaces.resolveReadPath(workspace, skill.filePath);
+        const response = await readFileTool(
+          { path: readPath.absolutePath },
+          {
+            cwd: workspace.root,
+            root: workspace.root,
+            readRoots: readPath.readRoots,
+          },
+        );
+        if (response.isError) {
+          const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
+          return { ...response, content: [textBlock(bounded.text)] };
+        }
+        workspaces.markReadPathLoaded(workspace, readPath);
+        const bounded = boundedModelText(response.content, MODEL_READ_MAX_CHARACTERS);
+        const result = bounded.text;
+        logToolCall(config, {
+          tool: toolNames.skillRead,
+          workspaceId: workspace.id,
+          path: formatPathForPrompt(skill.filePath),
+          success: true,
+          durationMs: Math.round(performance.now() - startedAt),
+          consoleUi: consoleToolUi(toolNames.skillRead, {
+            workspaceId: workspace.id,
+            path: formatPathForPrompt(skill.filePath),
+            summary: { name: skill.name, ...textSummary(response.content) },
+            payload: { content: response.content },
+          }),
+        });
+        return {
+          ...response,
+          content: [textBlock(result)],
+          structuredContent: {
+            result,
+            name: skill.name,
+            description: skill.description,
+            path: formatPathForPrompt(skill.filePath),
+          },
+        };
+      },
+    );
+  }
+
   server.registerTool(
     "todo_write",
     {
@@ -1362,18 +1525,20 @@ export function createMcpServer(
       description:
         "Create or replace the lightweight todo list for the current workspace. Use this to persist the model's current execution checklist. This is separate from checkpoints and is not a Goal system.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         todos: z.array(workspaceTodoInputSchema).max(100).describe("Complete todo list in execution order."),
+        reportMode: workspaceTodoReportModeSchema.optional().describe("Use summary when the user requested a final report after all items are complete."),
       },
       outputSchema: resultOutputSchema({
         todos: z.array(workspaceTodoOutputSchema),
+        reportMode: workspaceTodoReportModeSchema,
         updatedAt: z.string(),
       }),
       annotations: WRITE_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, todos }) => {
+    async ({ workspaceId, todos, reportMode }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const ids = new Set<string>();
       const normalizedTodos = todos.map((todo) => {
         const id = todo.id?.trim() || randomUUID();
@@ -1387,18 +1552,18 @@ export function createMcpServer(
           status: todo.status ?? "pending" as const,
         };
       });
-      const saved = await workspaces.saveTodos(workspace, normalizedTodos);
+      const saved = await workspaces.saveTodos(workspace, normalizedTodos, reportMode);
       const result = normalizedTodos.length === 0
         ? "Cleared workspace todo list."
         : `Saved ${normalizedTodos.length} workspace todo(s).`;
       logToolCall(config, {
         tool: "todo_write",
-        workspaceId,
+        workspaceId: workspace.id,
         path: workspace.root,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
         consoleUi: consoleToolUi("todo_write", {
-          workspaceId,
+          workspaceId: workspace.id,
           path: workspace.root,
           todos: saved.todos,
           summary: { count: saved.todos.length },
@@ -1406,7 +1571,7 @@ export function createMcpServer(
       });
       return {
         content: [textBlock(result)],
-        structuredContent: { result, todos: saved.todos, updatedAt: saved.updatedAt },
+        structuredContent: { result, todos: saved.todos, reportMode: saved.reportMode, updatedAt: saved.updatedAt },
       };
     },
   );
@@ -1416,9 +1581,9 @@ export function createMcpServer(
     {
       title: "Update workspace todo",
       description:
-        "Update one item in the workspace todo list by id. Use this as work starts or completes so the checklist remains current.",
+        "Update one item in the workspace todo list by id. Use this as work starts or completes so the checklist remains current. When reportMode is summary, do not report completion until all items are completed.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         id: z.string().min(1).describe("Todo id returned by todo_write."),
         status: workspaceTodoStatusSchema.describe("New todo status."),
         content: z.string().min(1).optional().describe("Optional replacement todo text."),
@@ -1426,13 +1591,14 @@ export function createMcpServer(
       outputSchema: resultOutputSchema({
         todo: workspaceTodoOutputSchema,
         todos: z.array(workspaceTodoOutputSchema),
+        shouldReport: z.boolean(),
         updatedAt: z.string(),
       }),
       annotations: WRITE_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, id, status, content }) => {
+    async ({ workspaceId, id, status, content }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const current = await workspaces.getTodos(workspace);
       if (!current) {
         throw new Error("No todo list exists for this workspace. Call todo_write first.");
@@ -1448,16 +1614,16 @@ export function createMcpServer(
       };
       const todos = [...current.todos];
       todos[index] = updatedTodo;
-      const saved = await workspaces.saveTodos(workspace, todos);
+      const saved = await workspaces.saveTodos(workspace, todos, current.reportMode);
       const result = `Updated todo ${id} to ${status}.`;
       logToolCall(config, {
         tool: "todo_update",
-        workspaceId,
+        workspaceId: workspace.id,
         path: workspace.root,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
         consoleUi: consoleToolUi("todo_update", {
-          workspaceId,
+          workspaceId: workspace.id,
           path: workspace.root,
           todo: updatedTodo,
           todos: saved.todos,
@@ -1470,6 +1636,7 @@ export function createMcpServer(
           result,
           todo: updatedTodo,
           todos: saved.todos,
+          shouldReport: saved.todos.every((todo) => todo.status === "completed"),
           updatedAt: saved.updatedAt,
         },
       };
@@ -1483,7 +1650,7 @@ export function createMcpServer(
       description:
         "Save a compact continuation checkpoint for this workspace after a meaningful milestone, before switching tasks, or when the user pauses work. Store project state and decisions, not the full conversation or secrets. A checkpoint updates the workspace resume state used by future ChatGPT conversations.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         goal: z.string().min(1).describe("Overall project goal that should survive into the next conversation."),
         currentTask: z.string().min(1).describe("The task or phase currently in progress."),
         completed: z.array(z.string()).optional().describe("Important work already completed."),
@@ -1508,8 +1675,9 @@ export function createMcpServer(
     },
     async ({ workspaceId, ...input }, { _meta }) => {
       const startedAt = performance.now();
-      const { workspace, state, facts, checkpoint } = await saveWorkspaceCheckpoint(
-        workspaceId,
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const { state, facts, checkpoint } = await saveWorkspaceCheckpoint(
+        workspace.id,
         input,
         openAiConversationScopeId(_meta),
         startedAt,
@@ -1536,7 +1704,7 @@ export function createMcpServer(
       description:
         "Search compact historical checkpoints for the current workspace when the resume state lacks a needed prior decision or the user asks what happened in earlier work. This searches saved project state, not full ChatGPT transcripts.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         query: z.string().default("").describe("Keyword or phrase to find in saved goals, tasks, decisions, files, blockers, or next steps. Leave empty to list recent checkpoints."),
         limit: z.number().int().min(1).max(10).optional().describe("Maximum checkpoint summaries to return. Defaults to 5."),
       },
@@ -1556,9 +1724,9 @@ export function createMcpServer(
       }),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, query, limit }) => {
+    async ({ workspaceId, query, limit }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const checkpoints = await workspaces.searchCheckpoints(workspace, query, limit ?? 5);
       const currentFacts = await captureWorkspaceFacts(workspace.root);
       const matches = checkpoints.map((checkpoint) => ({
@@ -1587,12 +1755,12 @@ export function createMcpServer(
           ].filter(Boolean).join("\n")).join("\n\n");
       logToolCall(config, {
         tool: "history_search",
-        workspaceId,
+        workspaceId: workspace.id,
         path: workspace.root,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
         consoleUi: consoleToolUi("history_search", {
-          workspaceId,
+          workspaceId: workspace.id,
           path: workspace.root,
           query,
           matches,
@@ -1609,90 +1777,135 @@ export function createMcpServer(
   server.registerTool(
     toolNames.read,
     {
-      title: "Read file",
+      title: "Read files",
       description:
-        [
-          "Read a file in a workspace. Use this for file inspection instead of shell commands like cat or sed.",
-          "Use this tool to inspect relevant AGENTS.md or CLAUDE.md files listed by open_workspace before working in nested directories.",
-          config.skillsEnabled
-            ? "If available skills were returned and a task matches one, read that skill's path before proceeding. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable."
-            : "",
-        ]
-          .filter(Boolean)
-          .join(" "),
+        "Read one file with path, or several files with paths (max 20). Prefer one multi-file call when several known files are needed. For nested AGENTS.md or CLAUDE.md instructions, read the listed instruction file before working in its scope. Use skill_read rather than read for skill discovery.",
       inputSchema: {
-        workspaceId: z
-          .string()
-          .describe(workspaceIdDescription),
-        path: z
-          .string()
-          .describe(
-            config.skillsEnabled
-              ? "File path to read, relative to the workspace root. May also be an advertised skill path from open_workspace skills."
-              : "File path to read, relative to the workspace root.",
-          ),
+        workspaceId: optionalWorkspaceIdSchema(),
+        path: z.string().min(1).optional().describe("One file path relative to the workspace root."),
+        paths: z
+          .array(z.string().min(1))
+          .max(20)
+          .optional()
+          .describe("Several file paths to read in one call. Maximum 20."),
         offset: z
           .number()
           .int()
           .positive()
           .optional()
-          .describe("1-indexed line number to start reading from."),
+          .describe("1-indexed line number to start reading from, applied to every selected file."),
         limit: z
           .number()
           .int()
           .positive()
+          .max(2_000)
           .optional()
-          .describe("Maximum number of lines to read."),
+          .describe("Maximum lines per file. Multi-file reads default to 400 lines per file."),
       },
-      outputSchema: resultOutputSchema(),
+      outputSchema: resultOutputSchema({
+        files: z.array(
+          z.object({
+            path: z.string(),
+            ok: z.boolean(),
+            characters: z.number().int().nonnegative(),
+            error: z.string().optional(),
+          }),
+        ),
+        truncated: z.boolean(),
+      }),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, ...input }) => {
+    async ({ workspaceId, path, paths, offset, limit }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
-      const readPath = workspaces.resolveReadPath(workspace, input.path);
-      const response = await readFileTool(
-        { ...input, path: readPath.absolutePath },
-        {
-          cwd: workspace.root,
-          root: workspace.root,
-          readRoots: readPath.readRoots,
-        },
-      );
-
-      if (response.isError) {
-        logFailedToolResponse(config, {
-          tool: toolNames.read,
-          workspaceId,
-          path: input.path,
-        }, response.content, startedAt);
-        return response;
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const targets = [
+        ...(path?.trim() ? [path.trim()] : []),
+        ...((paths ?? []).map((item) => item.trim()).filter(Boolean)),
+      ];
+      const uniqueTargets = [...new Set(targets)].slice(0, 20);
+      if (uniqueTargets.length === 0) {
+        return {
+          isError: true,
+          content: [textBlock("path or paths is required")],
+        };
       }
-      workspaces.markReadPathLoaded(workspace, readPath);
 
-      const summary = {
-        ...textSummary(response.content),
-        offset: input.offset ?? 1,
-        limited: input.limit !== undefined,
-      };
+      const perFileLimit = limit ?? (uniqueTargets.length > 1 ? 400 : undefined);
+      const rendered: string[] = [];
+      const files: Array<{ path: string; ok: boolean; characters: number; error?: string }> = [];
+      const consoleFiles: Array<{ path: string; content: ToolContent[]; error?: string }> = [];
+
+      for (const target of uniqueTargets) {
+        try {
+          const readPath = workspaces.resolveReadPath(workspace, target);
+          const response = await readFileTool(
+            {
+              path: readPath.absolutePath,
+              offset,
+              limit: perFileLimit,
+            },
+            {
+              cwd: workspace.root,
+              root: workspace.root,
+              readRoots: readPath.readRoots,
+            },
+          );
+          const rawText = contentText(response.content);
+          if (response.isError) {
+            const error = truncateModelText(rawText, MODEL_ERROR_MAX_CHARACTERS).text;
+            if (uniqueTargets.length > 1) rendered.push(`=== ${target} (error) ===\n${error}`);
+            else rendered.push(error);
+            files.push({ path: target, ok: false, characters: rawText.length, error });
+            consoleFiles.push({ path: target, content: response.content, error: rawText });
+            continue;
+          }
+
+          workspaces.markReadPathLoaded(workspace, readPath);
+          if (uniqueTargets.length > 1) rendered.push(`=== ${target} ===\n${rawText}`);
+          else rendered.push(rawText);
+          files.push({ path: target, ok: true, characters: rawText.length });
+          consoleFiles.push({ path: target, content: response.content });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (uniqueTargets.length > 1) rendered.push(`=== ${target} (error) ===\n${message}`);
+          else rendered.push(message);
+          files.push({ path: target, ok: false, characters: 0, error: message });
+          consoleFiles.push({ path: target, content: [], error: message });
+        }
+      }
+
+      const rawResult = rendered.join("\n");
+      const bounded = truncateModelText(rawResult, MODEL_READ_MAX_CHARACTERS);
+      const success = files.some((file) => file.ok);
       logToolCall(config, {
         tool: toolNames.read,
-        workspaceId,
-        path: input.path,
-        success: true,
+        workspaceId: workspace.id,
+        path: uniqueTargets.length === 1 ? uniqueTargets[0] : `${uniqueTargets.length} files`,
+        success,
         durationMs: Math.round(performance.now() - startedAt),
+        error: success ? undefined : files.map((file) => file.error).filter(Boolean).join("; "),
         consoleUi: consoleToolUi(toolNames.read, {
-          workspaceId,
-          path: input.path,
-          summary,
-          payload: { content: response.content },
+          workspaceId: workspace.id,
+          path: uniqueTargets.length === 1 ? uniqueTargets[0] : `${uniqueTargets.length} files`,
+          summary: {
+            files: files.length,
+            ok: files.filter((file) => file.ok).length,
+            characters: rawResult.length,
+            modelTruncated: bounded.truncated,
+            offset: offset ?? 1,
+            limit: perFileLimit,
+          },
+          payload: { files: consoleFiles },
         }),
       });
 
       return {
-        ...response,
+        ...(success ? {} : { isError: true }),
+        content: [textBlock(bounded.text)],
         structuredContent: {
-          result: contentText(response.content),
+          result: bounded.text,
+          files,
+          truncated: bounded.truncated || targets.length > uniqueTargets.length,
         },
       };
     },
@@ -1705,7 +1918,7 @@ export function createMcpServer(
       description:
         "Move or rename one file or directory inside a workspace. The destination parent must already exist and the destination must not already exist.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         source: z.string().min(1).describe("Existing source path relative to the workspace root."),
         destination: z.string().min(1).describe("Unused destination path relative to the workspace root."),
       },
@@ -1716,19 +1929,19 @@ export function createMcpServer(
       _meta: {},
       annotations: MOVE_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, source, destination }) => {
+    async ({ workspaceId, source, destination }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const moved = await moveWorkspacePath(workspace.root, source, destination);
       const result = `Moved ${moved.source} to ${moved.destination}.`;
       logToolCall(config, {
         tool: "move_file",
-        workspaceId,
+        workspaceId: workspace.id,
         path: moved.source,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
         consoleUi: consoleToolUi("move_file", {
-          workspaceId,
+          workspaceId: workspace.id,
           path: moved.source,
           summary: {
             source: moved.source,
@@ -1758,9 +1971,7 @@ export function createMcpServer(
       description:
         `Create or completely overwrite a file in a workspace. Prefer ${toolNames.edit} for targeted changes to existing files.`,
       inputSchema: {
-        workspaceId: z
-          .string()
-          .describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         path: z
           .string()
           .describe("File path to write, relative to the workspace root."),
@@ -1769,9 +1980,9 @@ export function createMcpServer(
       outputSchema: resultOutputSchema(),
       annotations: WRITE_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, ...input }) => {
+    async ({ workspaceId, ...input }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       workspaces.resolvePath(workspace, input.path);
       const response = await writeFileTool(input, {
         cwd: workspace.root,
@@ -1781,10 +1992,11 @@ export function createMcpServer(
       if (response.isError) {
         logFailedToolResponse(config, {
           tool: toolNames.write,
-          workspaceId,
+          workspaceId: workspace.id,
           path: input.path,
         }, response.content, startedAt);
-        return response;
+        const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
+        return { ...response, content: [textBlock(bounded.text)] };
       }
 
       const patch = newFilePatch(input.path, input.content);
@@ -1796,12 +2008,12 @@ export function createMcpServer(
       };
       logToolCall(config, {
         tool: toolNames.write,
-        workspaceId,
+        workspaceId: workspace.id,
         path: input.path,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
         consoleUi: consoleToolUi(toolNames.write, {
-          workspaceId,
+          workspaceId: workspace.id,
           path: input.path,
           summary,
           payload: {
@@ -1827,9 +2039,7 @@ export function createMcpServer(
       description:
         `Edit one file in a workspace by replacing exact text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit and keep oldText as small as possible while still unique.`,
       inputSchema: {
-        workspaceId: z
-          .string()
-          .describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         path: z
           .string()
           .describe("File path to edit, relative to the workspace root."),
@@ -1851,9 +2061,9 @@ export function createMcpServer(
       }),
       annotations: EDIT_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, ...input }) => {
+    async ({ workspaceId, ...input }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       workspaces.resolvePath(workspace, input.path);
       const response = await editFileTool(input, {
         cwd: workspace.root,
@@ -1863,10 +2073,11 @@ export function createMcpServer(
       if (response.isError) {
         logFailedToolResponse(config, {
           tool: toolNames.edit,
-          workspaceId,
+          workspaceId: workspace.id,
           path: input.path,
         }, response.content, startedAt);
-        return response;
+        const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
+        return { ...response, content: [textBlock(bounded.text)] };
       }
 
       const stats = countDiffStats(
@@ -1880,12 +2091,12 @@ export function createMcpServer(
       const editContent = [textBlock(editResultText)];
       logToolCall(config, {
         tool: toolNames.edit,
-        workspaceId,
+        workspaceId: workspace.id,
         path: input.path,
         success: true,
         durationMs: Math.round(performance.now() - startedAt),
         consoleUi: consoleToolUi(toolNames.edit, {
-          workspaceId,
+          workspaceId: workspace.id,
           path: input.path,
           summary,
           payload: {
@@ -1906,20 +2117,114 @@ export function createMcpServer(
   );
   }
 
-  if (config.toolMode === "codex") {
-    server.registerTool(
-      "apply_patch",
+  server.registerTool(
+    toolNames.codeExplore,
+    {
+      title: "Explore code structure",
+      description:
+        "Return a compact outline of source files and top-level symbols. Use this before broad grep/read sequences when you need a map of an unfamiliar area.",
+      inputSchema: {
+        workspaceId: optionalWorkspaceIdSchema(),
+        path: z.string().optional().describe("Directory relative to the workspace root. Defaults to the workspace root."),
+        maxFiles: z.number().int().positive().max(300).optional().describe("Maximum source files to outline. Defaults to 80."),
+      },
+      outputSchema: resultOutputSchema({
+        root: z.string(),
+        fileCount: z.number().int().nonnegative(),
+        outline: z.array(
+          z.object({
+            path: z.string(),
+            lines: z.number().int().nonnegative(),
+            symbols: z.array(z.string()),
+          }),
+        ),
+        truncated: z.boolean(),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ workspaceId, path, maxFiles }, { _meta }) => {
+      const startedAt = performance.now();
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const scope = path?.trim() || ".";
+      workspaces.resolvePath(workspace, scope);
+      const fileLimit = maxFiles ?? 80;
+      const discovery = await findFilesTool(
+        {
+          pattern: "**/*",
+          path: scope,
+          limit: Math.min(2_000, Math.max(fileLimit * 8, fileLimit)),
+        },
+        { cwd: workspace.root, root: workspace.root },
+      );
+      if (discovery.isError) return discovery;
+
+      const discovered = contentText(discovery.content)
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith("[") && line !== "No files found matching pattern");
+      const candidates = discovered
+        .map((relativePath) => scope === "." ? relativePath : joinPath(scope, relativePath).split("\\").join("/"))
+        .filter((relativePath) => CODE_EXPLORE_EXTENSIONS.has(extname(relativePath).toLowerCase()))
+        .slice(0, fileLimit);
+
+      const outline: Array<{ path: string; lines: number; symbols: string[] }> = [];
+      const rendered: string[] = [];
+      for (const relativePath of candidates) {
+        try {
+          const absolutePath = workspaces.resolvePath(workspace, relativePath);
+          const raw = await readTextFile(absolutePath, "utf8");
+          const lines = raw.replaceAll("\r\n", "\n").split("\n");
+          if (raw.endsWith("\n")) lines.pop();
+          const symbols: string[] = [];
+          for (let index = 0; index < lines.length && symbols.length < 12; index += 1) {
+            const match = CODE_SYMBOL_PATTERN.exec(lines[index] ?? "");
+            if (match) symbols.push(`${match[1]} ${match[2]} (L${index + 1})`);
+          }
+          outline.push({ path: relativePath, lines: lines.length, symbols });
+          rendered.push(`${relativePath} · ${lines.length} lines`, ...symbols.map((symbol) => `    ${symbol}`));
+        } catch {
+          // Files can disappear during discovery; skip them rather than failing the whole outline.
+        }
+      }
+
+      const bounded = truncateModelText(rendered.join("\n") || "(empty)", MODEL_SEARCH_MAX_CHARACTERS);
+      logToolCall(config, {
+        tool: toolNames.codeExplore,
+        workspaceId: workspace.id,
+        path: scope,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+        consoleUi: consoleToolUi(toolNames.codeExplore, {
+          workspaceId: workspace.id,
+          path: scope,
+          summary: { files: outline.length, discovered: discovered.length, modelTruncated: bounded.truncated },
+          payload: { outline },
+        }),
+      });
+      return {
+        content: [textBlock(bounded.text)],
+        structuredContent: {
+          result: bounded.text,
+          root: scope,
+          fileCount: outline.length,
+          outline,
+          truncated: bounded.truncated || candidates.length < discovered.filter((relativePath) => CODE_EXPLORE_EXTENSIONS.has(extname(relativePath).toLowerCase())).length,
+        },
+      };
+    },
+  );
+
+  server.registerTool(
+      toolNames.applyPatch,
       {
         title: "Apply patch",
         description:
           "Apply one Codex-style patch in a workspace. Supports adding, overwriting, updating, deleting, and moving files. Use this for all file modifications. Paths must be relative to the workspace.",
         inputSchema: {
-          workspaceId: z
-            .string()
-            .describe(workspaceIdDescription),
+          workspaceId: optionalWorkspaceIdSchema(),
           patch: z
             .string()
-            .describe("Patch text enclosed by *** Begin Patch and *** End Patch markers."),
+            .describe("One Codex-style multi-file patch enclosed by *** Begin Patch and *** End Patch markers."),
         },
         outputSchema: resultOutputSchema({
           additions: z.number(),
@@ -1934,9 +2239,9 @@ export function createMcpServer(
         }),
         annotations: EDIT_TOOL_ANNOTATIONS,
       },
-      async ({ workspaceId, patch }) => {
+      async ({ workspaceId, patch }, { _meta }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
         const applied = await applyPatch(workspace.root, patch);
         const paths = applied.files.map((file) => file.path).join(", ");
         const result = `Applied patch to ${applied.files.length} file(s): ${paths}`;
@@ -1946,12 +2251,12 @@ export function createMcpServer(
           : `${applied.files.length} files`;
 
         logToolCall(config, {
-          tool: "apply_patch",
-          workspaceId,
+          tool: toolNames.applyPatch,
+          workspaceId: workspace.id,
           success: true,
           durationMs: Math.round(performance.now() - startedAt),
-          consoleUi: consoleToolUi("apply_patch", {
-            workspaceId,
+          consoleUi: consoleToolUi(toolNames.applyPatch, {
+            workspaceId: workspace.id,
             path: displayPath,
             summary: {
               files: applied.files.length,
@@ -1974,7 +2279,6 @@ export function createMcpServer(
         };
       },
     );
-  }
 
   if (config.toolMode === "full") {
     server.registerTool(
@@ -1984,9 +2288,7 @@ export function createMcpServer(
         description:
           "Search file contents in a workspace. Use this before broad reads when looking for symbols, text, or usage sites. Respects project ignore rules.",
         inputSchema: {
-          workspaceId: z
-            .string()
-            .describe(workspaceIdDescription),
+          workspaceId: optionalWorkspaceIdSchema(),
           pattern: z.string().describe("Search pattern."),
           path: z
             .string()
@@ -1999,9 +2301,9 @@ export function createMcpServer(
         outputSchema: resultOutputSchema(),
         annotations: { readOnlyHint: true },
       },
-      async ({ workspaceId, ...input }) => {
+      async ({ workspaceId, ...input }, { _meta }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
         if (input.path) workspaces.resolvePath(workspace, input.path);
         const response = await grepFilesTool(input, {
           cwd: workspace.root,
@@ -2011,10 +2313,11 @@ export function createMcpServer(
         if (response.isError) {
           logFailedToolResponse(config, {
             tool: toolNames.grep,
-            workspaceId,
+            workspaceId: workspace.id,
             path: input.path,
           }, response.content, startedAt);
-          return response;
+          const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
+          return { ...response, content: [textBlock(bounded.text)] };
         }
 
         const summary = {
@@ -2024,22 +2327,24 @@ export function createMcpServer(
         };
         logToolCall(config, {
           tool: toolNames.grep,
-          workspaceId,
+          workspaceId: workspace.id,
           path: input.path,
           success: true,
           durationMs: Math.round(performance.now() - startedAt),
           consoleUi: consoleToolUi(toolNames.grep, {
-            workspaceId,
+            workspaceId: workspace.id,
             path: input.path,
             summary,
             payload: { content: response.content },
           }),
         });
 
+        const bounded = boundedModelText(response.content, MODEL_SEARCH_MAX_CHARACTERS);
         return {
           ...response,
+          content: [textBlock(bounded.text)],
           structuredContent: {
-            result: contentText(response.content),
+            result: bounded.text,
           },
         };
       },
@@ -2052,9 +2357,7 @@ export function createMcpServer(
         description:
           "Find files by glob pattern in a workspace. Use this to discover filenames or narrow file sets before reading. Respects project ignore rules.",
         inputSchema: {
-          workspaceId: z
-            .string()
-            .describe(workspaceIdDescription),
+          workspaceId: optionalWorkspaceIdSchema(),
           pattern: z.string().describe("File glob pattern."),
           path: z
             .string()
@@ -2064,9 +2367,9 @@ export function createMcpServer(
         outputSchema: resultOutputSchema(),
         annotations: { readOnlyHint: true },
       },
-      async ({ workspaceId, ...input }) => {
+      async ({ workspaceId, ...input }, { _meta }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
         if (input.path) workspaces.resolvePath(workspace, input.path);
         const response = await findFilesTool(input, {
           cwd: workspace.root,
@@ -2076,10 +2379,11 @@ export function createMcpServer(
         if (response.isError) {
           logFailedToolResponse(config, {
             tool: toolNames.glob,
-            workspaceId,
+            workspaceId: workspace.id,
             path: input.path,
           }, response.content, startedAt);
-          return response;
+          const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
+          return { ...response, content: [textBlock(bounded.text)] };
         }
 
         const summary = {
@@ -2089,22 +2393,24 @@ export function createMcpServer(
         };
         logToolCall(config, {
           tool: toolNames.glob,
-          workspaceId,
+          workspaceId: workspace.id,
           path: input.path,
           success: true,
           durationMs: Math.round(performance.now() - startedAt),
           consoleUi: consoleToolUi(toolNames.glob, {
-            workspaceId,
+            workspaceId: workspace.id,
             path: input.path,
             summary,
             payload: { content: response.content },
           }),
         });
 
+        const bounded = boundedModelText(response.content, MODEL_SEARCH_MAX_CHARACTERS);
         return {
           ...response,
+          content: [textBlock(bounded.text)],
           structuredContent: {
-            result: contentText(response.content),
+            result: bounded.text,
           },
         };
       },
@@ -2117,9 +2423,7 @@ export function createMcpServer(
         description:
           "List a directory in a workspace. Use this for directory inspection before reading files.",
         inputSchema: {
-          workspaceId: z
-            .string()
-            .describe(workspaceIdDescription),
+          workspaceId: optionalWorkspaceIdSchema(),
           path: z
             .string()
             .describe(
@@ -2129,9 +2433,9 @@ export function createMcpServer(
         outputSchema: resultOutputSchema(),
         annotations: { readOnlyHint: true },
       },
-      async ({ workspaceId, ...input }) => {
+      async ({ workspaceId, ...input }, { _meta }) => {
         const startedAt = performance.now();
-        const workspace = workspaces.getWorkspace(workspaceId);
+        const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
         workspaces.resolvePath(workspace, input.path);
         const response = await listDirectoryTool(input, {
           cwd: workspace.root,
@@ -2141,31 +2445,34 @@ export function createMcpServer(
         if (response.isError) {
           logFailedToolResponse(config, {
             tool: toolNames.ls,
-            workspaceId,
+            workspaceId: workspace.id,
             path: input.path,
           }, response.content, startedAt);
-          return response;
+          const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
+          return { ...response, content: [textBlock(bounded.text)] };
         }
 
         const summary = textSummary(response.content);
         logToolCall(config, {
           tool: toolNames.ls,
-          workspaceId,
+          workspaceId: workspace.id,
           path: input.path,
           success: true,
           durationMs: Math.round(performance.now() - startedAt),
           consoleUi: consoleToolUi(toolNames.ls, {
-            workspaceId,
+            workspaceId: workspace.id,
             path: input.path,
             summary,
             payload: { content: response.content },
           }),
         });
 
+        const bounded = boundedModelText(response.content, MODEL_SEARCH_MAX_CHARACTERS);
         return {
           ...response,
+          content: [textBlock(bounded.text)],
           structuredContent: {
-            result: contentText(response.content),
+            result: bounded.text,
           },
         };
       },
@@ -2181,9 +2488,7 @@ export function createMcpServer(
         ? `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, search, file discovery, and directory inspection. ${SHELL_GIT_WRITE_ALLOWANCE} In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by DevSpace and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`
         : `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by DevSpace and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`,
       inputSchema: {
-        workspaceId: z
-          .string()
-          .describe(workspaceIdDescription),
+        workspaceId: optionalWorkspaceIdSchema(),
         command: z
           .string()
           .describe(
@@ -2207,14 +2512,14 @@ export function createMcpServer(
     },
     async ({ workspaceId, workingDirectory, ...input }, { _meta }) => {
       const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const legacyCheckpoint = parseLegacyCheckpointCommand(input.command);
 
       if (legacyCheckpoint?.kind === "prepare") {
         const result = [
           "DEVSPACE_CHECKPOINT_STATE_REQUIRED",
           "The user asked to save this legacy conversation as a workspace checkpoint.",
-          "Do not ask the user any follow-up question. Immediately call this same bash tool again for the same workspaceId.",
+          "Do not ask the user any follow-up question. Immediately call this same bash tool again; the current conversation workspace binding will be reused automatically.",
           "The command must start with `checkpoint ` followed by one JSON object containing the semantic state you can infer from the current conversation.",
           "Required JSON fields: goal, currentTask. Optional array fields: completed, decisions, files, verification, blockers, next.",
           "Example: checkpoint {\"goal\":\"Continue the project\",\"currentTask\":\"Finish the current phase\",\"completed\":[],\"decisions\":[],\"files\":[],\"verification\":[],\"blockers\":[],\"next\":[]}",
@@ -2228,7 +2533,7 @@ export function createMcpServer(
 
       if (legacyCheckpoint?.kind === "save") {
         const { checkpoint } = await saveWorkspaceCheckpoint(
-          workspaceId,
+          workspace.id,
           legacyCheckpoint.state,
           openAiConversationScopeId(_meta),
           startedAt,
@@ -2253,12 +2558,13 @@ export function createMcpServer(
       if (response.isError) {
         logFailedToolResponse(config, {
           tool: toolNames.shell,
-          workspaceId,
+          workspaceId: workspace.id,
           workingDirectory: workingDirectory ?? ".",
           command: input.command,
           commandLength: input.command.length,
         }, response.content, startedAt);
-        return response;
+        const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
+        return { ...response, content: [textBlock(bounded.text)] };
       }
 
       const summary = {
@@ -2268,7 +2574,7 @@ export function createMcpServer(
       };
       logToolCall(config, {
         tool: toolNames.shell,
-        workspaceId,
+        workspaceId: workspace.id,
         workingDirectory: workingDirectory ?? ".",
         command: input.command,
         commandLength: input.command.length,
@@ -2276,17 +2582,19 @@ export function createMcpServer(
         durationMs: Math.round(performance.now() - startedAt),
         outputPreview: consoleOutputPreview(contentText(response.content)),
         consoleUi: consoleToolUi(toolNames.shell, {
-          workspaceId,
+          workspaceId: workspace.id,
           path: workingDirectory,
           summary,
           payload: { content: response.content },
         }),
       });
 
+      const bounded = boundedModelText(response.content, MODEL_COMMAND_MAX_CHARACTERS);
       return {
         ...response,
+        content: [textBlock(bounded.text)],
         structuredContent: {
-          result: contentText(response.content),
+          result: bounded.text,
         },
       };
     },
@@ -2332,7 +2640,6 @@ export function createServer(
     host: config.host,
     ...(allowedHosts ? { allowedHosts } : {}),
   });
-  const transports = new McpSessionRegistry<Transport>();
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
@@ -2351,36 +2658,10 @@ export function createServer(
     ? getLocalAgentProviderAvailabilitySnapshot()
     : [];
 
-  const logSessionCloseResults = (
-    reason: "idle_timeout" | "server_shutdown",
-    results: McpSessionCloseResult[],
-  ) => {
-    for (const result of results) {
-      if (result.error) {
-        logEvent(config.logging, "warn", "mcp_session_close_failed", {
-          reason,
-          sessionIdPrefix: sessionIdPrefix(result.sessionId),
-          error:
-            result.error instanceof Error
-              ? result.error.message
-              : String(result.error),
-        });
-        continue;
-      }
-
-      logEvent(config.logging, "info", "mcp_session_closed", {
-        reason,
-        sessionIdPrefix: sessionIdPrefix(result.sessionId),
-      });
-    }
-  };
-
-  const sessionCleanupTimer = setInterval(() => {
-    void transports
-      .closeIdle(MCP_SESSION_IDLE_TIMEOUT_MS)
-      .then((results) => logSessionCloseResults("idle_timeout", results));
-  }, MCP_SESSION_CLEANUP_INTERVAL_MS);
-  sessionCleanupTimer.unref();
+  // ✨ Performance optimization: initialize request optimizer and concurrent handler
+  const mcpOptimizer = new McpRequestOptimizer();
+  const concurrentHandler = new ConcurrentMcpHandler();
+  const cleanupInterval = mcpOptimizer.startCacheCleanup();
 
   if (config.logging.trustProxy) {
     app.set("trust proxy", true);
@@ -2431,6 +2712,21 @@ export function createServer(
     }
     res.setHeader("Cache-Control", "no-store");
     res.json(createRuntimeStatus(config));
+  });
+
+  app.get("/statusz/optimizer", (req, res) => {
+    const ownerToken = req.header("x-devspace-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      concurrent: concurrentHandler.getStats(),
+      cache: {
+        size: mcpOptimizer.getCacheSize(),
+      },
+    });
   });
 
   app.get("/console/snapshot", (req, res) => {
@@ -2756,96 +3052,125 @@ export function createServer(
     });
   });
 
-  app.all("/mcp", async (req, res) => {
+  app.post("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
-    const sessionId = req.header("mcp-session-id");
-    const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
 
-    await new Promise<void>((resolve, reject) => {
-      bearerAuth(req, res, (error?: unknown) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
-    if (res.headersSent) return;
-
-    if (!req.auth?.resource || !checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl })) {
-      logEvent(config.logging, "warn", "auth_denied", {
-        requestId,
-        method: req.method,
-        path: requestPath(req),
-        reason: "invalid_oauth_resource",
-        ...requestLogFields(req, config),
-      });
-      sendJsonRpcError(res, 401, -32001, "Unauthorized");
+    // Fast path: try cache for tools/list and prompts/list
+    if (mcpOptimizer.tryServeCached(req, res)) {
+      logEvent(config.logging, "debug", "mcp_cache_hit", { requestId });
       return;
     }
 
-    logEvent(config.logging, "debug", "mcp_request", {
-      requestId,
-      method: req.method,
-      sessionIdPresent: Boolean(sessionId),
-      sessionIdPrefix: sessionIdPrefix(sessionId),
-      isInitialize: initializeRequest,
-    });
+    // Concurrent limit check
+    if (!concurrentHandler.canAccept()) {
+      logEvent(config.logging, "warn", "mcp_throttled", { 
+        requestId, 
+        stats: concurrentHandler.getStats() 
+      });
+      sendJsonRpcError(res, 429, -32000, "Too many concurrent requests");
+      return;
+    }
 
-    try {
-      let transport: Transport | undefined;
-
-      if (sessionId) {
-        transport = transports.get(sessionId);
-        if (!transport) {
-          sendJsonRpcError(res, 404, -32000, "Unknown MCP session");
-          return;
-        }
-      } else if (initializeRequest) {
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (newSessionId) => {
-            if (transport) transports.register(newSessionId, transport);
-            logEvent(config.logging, "info", "mcp_session_created", {
-              requestId,
-              sessionIdPrefix: sessionIdPrefix(newSessionId),
-              ...requestLogFields(req, config),
-            });
-          },
+    // Wrap original logic with concurrent handler
+    await concurrentHandler.wrap(async () => {
+      await new Promise<void>((resolve, reject) => {
+        bearerAuth(req, res, (error?: unknown) => {
+          if (error) reject(error);
+          else resolve();
         });
+      });
+      if (res.headersSent) return;
 
-        transport.onclose = () => {
-          const closedSessionId = transport?.sessionId;
-          if (closedSessionId && transports.remove(closedSessionId)) {
-            logEvent(config.logging, "info", "mcp_session_closed", {
-              reason: "transport_close",
-              sessionIdPrefix: sessionIdPrefix(closedSessionId),
-            });
-          }
-        };
-
-        const server = createMcpServer(
-          config,
-          workspaces,
-          processSessions,
-          localAgentProviders,
-          incomingArtifactAdapters,
-          localAgentStore,
-        );
-        await server.connect(transport);
-      } else {
-        sendJsonRpcError(res, 400, -32000, "No valid MCP session");
+      if (!req.auth?.resource || !checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl })) {
+        logEvent(config.logging, "warn", "auth_denied", {
+          requestId,
+          method: req.method,
+          path: requestPath(req),
+          reason: "invalid_oauth_resource",
+          ...requestLogFields(req, config),
+        });
+        sendJsonRpcError(res, 401, -32001, "Unauthorized");
         return;
       }
 
-      await transport.handleRequest(req, res, req.body);
-    } catch (error) {
-      logEvent(config.logging, "error", "mcp_request_error", {
+      logEvent(config.logging, "debug", "mcp_request", {
         requestId,
-        error: error instanceof Error ? error.message : String(error),
+        method: req.method,
+        stateless: true,
+        legacySessionHeaderPresent: Boolean(req.header("mcp-session-id")),
       });
-      if (!res.headersSent) {
-        sendJsonRpcError(res, 500, -32603, "Internal server error");
+
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      const mcpServer = createMcpServer(
+        config,
+        workspaces,
+        processSessions,
+        localAgentProviders,
+        incomingArtifactAdapters,
+        localAgentStore,
+      );
+
+      let closed = false;
+      const closeRequestRuntime = async (): Promise<void> => {
+        if (closed) return;
+        closed = true;
+        await transport.close().catch(() => undefined);
+        await mcpServer.close().catch(() => undefined);
+      };
+      res.once("close", () => {
+        void closeRequestRuntime();
+      });
+
+      try {
+        await mcpServer.connect(transport);
+        
+        // Intercept response to cache it
+        const originalWrite = res.write.bind(res);
+        let responseBody = "";
+        res.write = function(chunk: any, ...args: any[]): boolean {
+          if (typeof chunk === "string") responseBody += chunk;
+          else if (Buffer.isBuffer(chunk)) responseBody += chunk.toString();
+          return originalWrite(chunk, ...args);
+        };
+        
+        await transport.handleRequest(req, res, req.body);
+        
+        // Cache the response if applicable
+        try {
+          const method = req.body?.method || (Array.isArray(req.body) && req.body[0]?.method);
+          if ((method === "tools/list" || method === "prompts/list") && responseBody) {
+            const parsed = JSON.parse(responseBody);
+            mcpOptimizer.cacheResponse(method, req.auth?.token, parsed);
+          }
+        } catch {
+          // Cache failure does not affect main flow
+        }
+        
+      } catch (error) {
+        logEvent(config.logging, "error", "mcp_request_error", {
+          requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (!res.headersSent) {
+          sendJsonRpcError(res, 500, -32603, "Internal server error");
+        }
+      } finally {
+        if (res.writableEnded || res.destroyed) {
+          await closeRequestRuntime();
+        }
       }
-    }
+    });
   });
+
+  const rejectStatelessMcpMethod = (req: Request, res: Response): void => {
+    res.setHeader("Allow", "POST");
+    sendJsonRpcError(res, 405, -32000, "Method not allowed. This MCP endpoint is stateless; use POST.");
+  };
+  app.get("/mcp", rejectStatelessMcpMethod);
+  app.delete("/mcp", rejectStatelessMcpMethod);
 
   let closePromise: Promise<void> | undefined;
   return {
@@ -2854,9 +3179,8 @@ export function createServer(
     localAgentProviders,
     close: () => {
       closePromise ??= (async () => {
-        clearInterval(sessionCleanupTimer);
-        const results = await transports.closeAll();
-        logSessionCloseResults("server_shutdown", results);
+        clearInterval(cleanupInterval);
+        mcpOptimizer.clearCache();
         processSessions.shutdown();
         oauthProvider.close();
         localAgentStore?.close();
