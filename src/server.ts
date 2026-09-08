@@ -221,7 +221,7 @@ function serverInstructions(config: ServerConfig): string {
     " Use checkpoint only at meaningful milestones, before switching tasks, or when the user pauses work; do not checkpoint after every tool call. Use history_search only when a previous checkpoint is needed to recover an older decision or detail that is not in the current continuation. Compatibility: if the user says exactly `checkpoint` but this conversation does not expose the checkpoint tool, use the existing bash tool with command `checkpoint` and immediately follow the returned machine instruction without asking the user for more input.";
 
   if (config.toolMode === "codex") {
-    return `Use GPTMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}.${memoryInstruction}${artifactInstruction}`;
+    return `Use GPTMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -416,10 +416,10 @@ function textBlock(text: string): ToolContent {
   return { type: "text", text };
 }
 
-const MODEL_READ_MAX_CHARACTERS = 32_000;
-const MODEL_SEARCH_MAX_CHARACTERS = 16_000;
-const MODEL_COMMAND_MAX_CHARACTERS = 16_000;
-const MODEL_ERROR_MAX_CHARACTERS = 8_000;
+const MODEL_READ_MAX_CHARACTERS = 24_000;
+const MODEL_SEARCH_MAX_CHARACTERS = 12_000;
+const MODEL_COMMAND_MAX_CHARACTERS = 12_000;
+const MODEL_ERROR_MAX_CHARACTERS = 6_000;
 const CODE_EXPLORE_EXTENSIONS = new Set([
   ".c", ".cc", ".cpp", ".cs", ".dart", ".go", ".h", ".hpp", ".java", ".js", ".jsx",
   ".kt", ".php", ".py", ".rb", ".rs", ".sh", ".sql", ".svelte", ".swift", ".ts", ".tsx", ".vue",
