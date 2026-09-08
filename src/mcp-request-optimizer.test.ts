@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { McpRequestOptimizer } from "./mcp-request-optimizer.js";
+import { McpRequestOptimizer, smartTruncateOutput } from "./mcp-request-optimizer.js";
 
 function request(input: {
   token?: string;
@@ -78,3 +78,38 @@ test("expired cache entries are not served", async () => {
   assert.equal(optimizer.tryServeCached(req as never, response().value as never), false);
   assert.deepEqual(optimizer.getStats(), { size: 0, hits: 0, misses: 1, writes: 1 });
 });
+
+test("smartTruncateOutput retains head, tail, and extracts middle critical errors", () => {
+  // Case 1: Short output under limit should not be truncated
+  const shortText = "Line 1: Starting test\nLine 2: Test passed successfully";
+  const shortResult = smartTruncateOutput(shortText, { maxCharacters: 1000 });
+  assert.equal(shortResult.truncated, false);
+  assert.equal(shortResult.text, shortText);
+
+  // Case 2: Long output with middle error
+  const lines: string[] = [];
+  for (let i = 1; i <= 200; i++) {
+    if (i === 100) {
+      lines.push("AssertionError: expected 'foo' to equal 'bar' at test.ts:100");
+    } else if (i === 105) {
+      lines.push("npm ERR! Test failed with exit code 1");
+    } else {
+      lines.push(`Line ${i}: processing item ${i}...`);
+    }
+  }
+  const longText = lines.join("\n");
+  const longResult = smartTruncateOutput(longText, {
+    maxCharacters: 2000,
+    headLines: 5,
+    tailLines: 5,
+  });
+
+  assert.equal(longResult.truncated, true);
+  assert.equal(longResult.extractedErrorCount >= 2, true);
+  assert.match(longResult.text, /Line 1: processing item 1/);
+  assert.match(longResult.text, /AssertionError: expected 'foo'/);
+  assert.match(longResult.text, /npm ERR! Test failed/);
+  assert.match(longResult.text, /Line 200: processing item 200/);
+  assert.match(longResult.text, /Smart-Truncated: Omitted/);
+});
+

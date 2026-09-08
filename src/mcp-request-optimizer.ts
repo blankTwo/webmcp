@@ -190,3 +190,106 @@ function isSuccessfulResponseFor(response: unknown, requestId: JsonRpcId): respo
     && "result" in candidate
     && !("error" in candidate);
 }
+
+export interface SmartTruncateOptions {
+  maxCharacters?: number;
+  maxLines?: number;
+  headLines?: number;
+  tailLines?: number;
+  maxErrorLines?: number;
+}
+
+export interface SmartTruncateResult {
+  text: string;
+  truncated: boolean;
+  originalLength: number;
+  originalLines: number;
+  savedCharacters: number;
+  extractedErrorCount: number;
+}
+
+const ERROR_LINE_PATTERN = /\b(?:error|failed|fatal|exception|panic|assertionerror|syntaxerror|typeerror|referenceerror|errno|npm ERR!|FAIL)\b/i;
+
+/**
+ * Smartly bounds large command outputs or file search results by retaining:
+ * 1. The invocation header lines (command setup/start)
+ * 2. Critical error lines / stack traces discovered in the middle lines
+ * 3. The completion summary / exit code tail lines
+ *
+ * This dramatically preserves useful debugging context for ChatGPT while
+ * protecting the context window and avoiding timeout bottlenecks.
+ */
+export function smartTruncateOutput(
+  text: string,
+  options: SmartTruncateOptions = {},
+): SmartTruncateResult {
+  const maxChars = options.maxCharacters ?? 10_000;
+  const originalLength = text.length;
+  const lines = text.split("\n");
+  const originalLines = lines.length;
+
+  if (originalLength <= maxChars && (!options.maxLines || originalLines <= options.maxLines)) {
+    return {
+      text,
+      truncated: false,
+      originalLength,
+      originalLines,
+      savedCharacters: 0,
+      extractedErrorCount: 0,
+    };
+  }
+
+  const headCount = options.headLines ?? 25;
+  const tailCount = options.tailLines ?? 25;
+  const maxErrors = options.maxErrorLines ?? 15;
+
+  if (originalLines <= headCount + tailCount) {
+    const marker = "\n... [Output truncated to preserve context window; use specific queries for details] ...\n";
+    const available = Math.max(0, maxChars - marker.length);
+    const head = Math.ceil(available * 0.65);
+    const tail = Math.floor(available * 0.35);
+    const resultText = `${text.slice(0, head)}${marker}${text.slice(text.length - tail)}`;
+    return {
+      text: resultText,
+      truncated: true,
+      originalLength,
+      originalLines,
+      savedCharacters: Math.max(0, originalLength - resultText.length),
+      extractedErrorCount: 0,
+    };
+  }
+
+  const headLines = lines.slice(0, headCount);
+  const tailLines = lines.slice(-tailCount);
+  const middleLines = lines.slice(headCount, -tailCount);
+
+  const extractedErrors: string[] = [];
+  for (const line of middleLines) {
+    if (ERROR_LINE_PATTERN.test(line)) {
+      extractedErrors.push(line.length > 200 ? `${line.slice(0, 200)}...` : line);
+      if (extractedErrors.length >= maxErrors) break;
+    }
+  }
+
+  const omittedCount = middleLines.length - extractedErrors.length;
+  let summaryMarker = `\n... [Smart-Truncated: Omitted ${omittedCount} line(s) (${Math.max(0, originalLength - maxChars)} chars). Retained head, errors, and completion summary] ...`;
+  if (extractedErrors.length > 0) {
+    summaryMarker += `\n--- Extracted Critical Error Lines (${extractedErrors.length}) ---\n${extractedErrors.join("\n")}\n---------------------------------------------`;
+  }
+
+  let combined = `${headLines.join("\n")}\n${summaryMarker}\n${tailLines.join("\n")}`;
+  if (combined.length > maxChars) {
+    const hardLimit = Math.max(100, maxChars - 100);
+    combined = `${combined.slice(0, hardLimit)}\n... [Output bounded by ${maxChars} character limit] ...`;
+  }
+
+  return {
+    text: combined,
+    truncated: true,
+    originalLength,
+    originalLines,
+    savedCharacters: Math.max(0, originalLength - combined.length),
+    extractedErrorCount: extractedErrors.length,
+  };
+}
+

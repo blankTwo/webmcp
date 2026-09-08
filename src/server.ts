@@ -17,7 +17,8 @@ import {
   registerArtifactTools,
 } from "./artifact-tools.js";
 import { loadConfig, type ServerConfig } from "./config.js";
-import { ConcurrentRequestLimiter, McpRequestOptimizer } from "./mcp-request-optimizer.js";
+import { ConcurrentRequestLimiter, McpRequestOptimizer, smartTruncateOutput } from "./mcp-request-optimizer.js";
+import { readImageFile } from "./image-utils.js";
 import {
   createOpenAIIncomingArtifactAdapter,
   type IncomingArtifactAdapter,
@@ -157,6 +158,7 @@ interface DiffStats {
 const toolNames = {
   openWorkspace: "open_workspace",
   read: "read",
+  readImage: "read_image",
   write: "write",
   edit: "edit",
   grep: "grep",
@@ -425,15 +427,10 @@ const CODE_EXPLORE_EXTENSIONS = new Set([
 const CODE_SYMBOL_PATTERN = /^\s*(?:export\s+)?(?:abstract\s+|final\s+|sealed\s+|static\s+|async\s+)*(class|mixin|enum|extension|typedef|interface|struct|func|function|def|fn)\s+([A-Za-z_][\w]*)/;
 
 function truncateModelText(text: string, maxCharacters: number): { text: string; truncated: boolean } {
-  if (text.length <= maxCharacters) return { text, truncated: false };
-
-  const marker = "\n... model context truncated; narrow the request or continue with offset/limit ...\n";
-  const available = Math.max(0, maxCharacters - marker.length);
-  const head = Math.ceil(available * 0.7);
-  const tail = Math.floor(available * 0.3);
+  const result = smartTruncateOutput(text, { maxCharacters });
   return {
-    text: `${text.slice(0, head)}${marker}${text.slice(text.length - tail)}`,
-    truncated: true,
+    text: result.text,
+    truncated: result.truncated,
   };
 }
 
@@ -1466,6 +1463,78 @@ export function createMcpServer(
         content: [textBlock(result)],
         structuredContent: { result, matches },
       };
+    },
+  );
+
+  server.registerTool(
+    toolNames.readImage,
+    {
+      title: "Read image",
+      description:
+        "Read an image file from the workspace as multimodal image content (PNG, JPEG, WebP, GIF, SVG, BMP, ICO). Use this when inspecting UI screenshots, diagrams, assets, or visual output.",
+      inputSchema: {
+        workspaceId: optionalWorkspaceIdSchema(),
+        path: z.string().min(1).describe("Image file path relative to the workspace root."),
+      },
+      outputSchema: resultOutputSchema({
+        mimeType: z.string(),
+        sizeBytes: z.number(),
+        extension: z.string(),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ workspaceId, path }, { _meta }) => {
+      const startedAt = performance.now();
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const absolutePath = workspaces.resolvePath(workspace, path);
+      try {
+        const imageResult = await readImageFile(absolutePath);
+        const result = `Loaded image ${path} (${imageResult.mimeType}, ${(imageResult.sizeBytes / 1024).toFixed(1)} KB)`;
+        logToolCall(config, {
+          tool: toolNames.readImage,
+          workspaceId: workspace.id,
+          path,
+          success: true,
+          durationMs: Math.round(performance.now() - startedAt),
+          consoleUi: consoleToolUi(toolNames.readImage, {
+            workspaceId: workspace.id,
+            path,
+            summary: {
+              mimeType: imageResult.mimeType,
+              sizeBytes: imageResult.sizeBytes,
+            },
+          }),
+        });
+
+        return {
+          content: [
+            {
+              type: "image" as const,
+              data: imageResult.base64Data,
+              mimeType: imageResult.mimeType,
+            },
+            textBlock(result),
+          ],
+          structuredContent: {
+            result,
+            mimeType: imageResult.mimeType,
+            sizeBytes: imageResult.sizeBytes,
+            extension: imageResult.extension,
+          },
+        };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logFailedToolResponse(
+          config,
+          { tool: toolNames.readImage, workspaceId: workspace.id, path },
+          [textBlock(errorMessage)],
+          startedAt,
+        );
+        return {
+          isError: true,
+          content: [textBlock(errorMessage)],
+        };
+      }
     },
   );
 

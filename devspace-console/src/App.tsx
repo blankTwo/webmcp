@@ -45,7 +45,7 @@ import { consoleApi, withQuery } from "./console-api";
 import { ProcessManager } from "./ProcessManager";
 import type { LogEvent, LogKind, LogStatus, WorkspaceItem } from "./types";
 
-type MainView = "logs" | "processes" | "optimizer" | "environment";
+type MainView = "logs" | "changes" | "processes" | "optimizer" | "environment";
 type Theme = "light" | "dark";
 type StatusFilter = "all" | "error" | "success" | "running";
 
@@ -111,6 +111,26 @@ interface RuntimeStatus {
 interface OptimizerStatus {
   concurrent: { active: number; limit: number };
   cache: { size: number; hits: number; misses: number; writes: number };
+}
+
+
+interface GitDiffFile {
+  path: string;
+  status: string;
+  additions: number;
+  removals: number;
+  diff: string;
+}
+
+interface GitDiffSnapshot {
+  workspaceRoot: string;
+  isGit: boolean;
+  clean: boolean;
+  totalFiles: number;
+  totalAdditions: number;
+  totalRemovals: number;
+  files: GitDiffFile[];
+  fullPatch: string;
 }
 
 interface ProcessListResponse {
@@ -486,6 +506,12 @@ function App() {
   const [customPathInput, setCustomPathInput] = useState<string>("");
   const [pathSaving, setPathSaving] = useState(false);
   const [pathFeedback, setPathFeedback] = useState<string | null>(null);
+  const [gitDiff, setGitDiff] = useState<GitDiffSnapshot | null>(null);
+  const [selectedDiffFile, setSelectedDiffFile] = useState<string | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [revertingFile, setRevertingFile] = useState<string | null>(null);
+  const [diffFeedback, setDiffFeedback] = useState<string | null>(null);
+
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -520,6 +546,44 @@ function App() {
       // ignore
     }
   }, []);
+
+  
+  const updateGitDiff = useCallback(async (customPath?: string) => {
+    try {
+      setDiffLoading(true);
+      const snapshot = await invoke<GitDiffSnapshot>("get_workspace_git_diff", {
+        workspacePath: customPath ?? workspace?.path ?? null,
+      });
+      setGitDiff(snapshot);
+      if (snapshot.files.length > 0) {
+        setSelectedDiffFile((prev) => (prev && snapshot.files.some((f) => f.path === prev) ? prev : snapshot.files[0].path));
+      } else {
+        setSelectedDiffFile(null);
+      }
+    } catch (error) {
+      console.warn("Failed to fetch git diff:", error);
+    } finally {
+      setDiffLoading(false);
+    }
+  }, [workspace?.path]);
+
+  const handleRevertFile = async (filePath: string) => {
+    if (!window.confirm(`确定要放弃文件 ${filePath} 的所有未提交改动吗？此操作不可逆。`)) return;
+    try {
+      setRevertingFile(filePath);
+      await invoke("revert_workspace_file", {
+        workspacePath: workspace?.path ?? null,
+        filePath,
+      });
+      setDiffFeedback(`已成功回滚文件: ${filePath}`);
+      await updateGitDiff();
+      setTimeout(() => setDiffFeedback(null), 3000);
+    } catch (error) {
+      setDiffFeedback(`回滚失败: ${String(error)}`);
+    } finally {
+      setRevertingFile(null);
+    }
+  };
 
   const updateProjectPathInfo = useCallback(async () => {
     try {
@@ -884,6 +948,11 @@ function App() {
               <span>实时日志</span>
               <em>{workspaceEvents.length}</em>
             </button>
+            <button className={classNames(view === "changes" && "selected")} onClick={() => { setView("changes"); void updateGitDiff(); }}>
+              <FileCode2 size={15} />
+              <span>变动审查</span>
+              {gitDiff?.files?.length ? <em className="diff-count-badge">{gitDiff.files.length}</em> : <em>0</em>}
+            </button>
             <button className={classNames(view === "processes" && "selected")} onClick={() => setView("processes")}>
               <TerminalSquare size={15} />
               <span>运行进程</span>
@@ -1015,6 +1084,131 @@ function App() {
               </button>
             </div>
           </header>
+
+          
+          {view === "changes" && (
+            <div className="diff-container">
+              <div className="diff-header">
+                <div className="diff-header-left">
+                  <FileCode2 size={18} className="text-blue-500" />
+                  <div>
+                    <h2 className="text-sm font-semibold m-0 text-slate-800 dark:text-slate-200">代码变动审查 (Git Diff Preview)</h2>
+                    <p className="text-xs text-slate-500 m-0 mt-0.5">
+                      {gitDiff?.isGit ? (
+                        <span>当前工作区: <code className="text-blue-500">{gitDiff.workspaceRoot}</code></span>
+                      ) : (
+                        <span>当前目录非 Git 仓库</span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  {diffFeedback && (
+                    <span className="text-xs font-medium px-2 py-1 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                      {diffFeedback}
+                    </span>
+                  )}
+                  {gitDiff && (
+                    <div className="diff-stats-badge">
+                      <span>改动文件: {gitDiff.totalFiles}</span>
+                      <span className="diff-add-count">+{gitDiff.totalAdditions}</span>
+                      <span className="diff-del-count">-{gitDiff.totalRemovals}</span>
+                    </div>
+                  )}
+                  <button
+                    className="monitor-btn-secondary flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    onClick={() => void updateGitDiff()}
+                    disabled={diffLoading}
+                  >
+                    <RotateCw size={13} className={classNames(diffLoading && "animate-spin")} />
+                    <span>刷新差异</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="diff-body">
+                <div className="diff-file-sidebar">
+                  <div className="p-3 border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    修改文件 ({gitDiff?.files?.length ?? 0})
+                  </div>
+                  {gitDiff?.files?.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-slate-400">
+                      ✓ 无未提交改动 (Clean)
+                    </div>
+                  ) : (
+                    gitDiff?.files?.map((f) => (
+                      <div
+                        key={f.path}
+                        className={classNames("diff-file-item", selectedDiffFile === f.path && "selected")}
+                        onClick={() => setSelectedDiffFile(f.path)}
+                      >
+                        <div className="flex items-center min-w-0 flex-1">
+                          <span className={classNames("diff-status-icon", f.status.includes("M") ? "M" : f.status.includes("A") || f.status.includes("?") ? "A" : "D")}>
+                            {f.status.includes("M") ? "M" : f.status.includes("A") || f.status.includes("?") ? "A" : "D"}
+                          </span>
+                          <span className="truncate" title={f.path}>{f.path}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-xs font-mono ml-2">
+                          <span className="text-emerald-500">+{f.additions}</span>
+                          <span className="text-rose-500">-{f.removals}</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                <div className="diff-viewer-main">
+                  {selectedDiffFile && gitDiff?.files?.find((f) => f.path === selectedDiffFile) ? (
+                    <>
+                      <div className="diff-viewer-header">
+                        <div className="flex items-center gap-2">
+                          <FileSearch size={14} className="text-slate-400" />
+                          <span className="font-semibold text-slate-200">{selectedDiffFile}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            className="px-2.5 py-1 text-xs font-medium rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30 transition-colors"
+                            onClick={() => void handleRevertFile(selectedDiffFile)}
+                            disabled={revertingFile === selectedDiffFile}
+                          >
+                            {revertingFile === selectedDiffFile ? "正在回滚..." : "放弃此文件改动 (Revert)"}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="diff-content-code">
+                        {gitDiff.files
+                          .find((f) => f.path === selectedDiffFile)
+                          ?.diff.split("\n")
+                          .map((line, idx) => {
+                            let lineClass = "diff-line";
+                            if (line.startsWith("+++") || line.startsWith("---")) {
+                              lineClass += " text-slate-400 font-bold";
+                            } else if (line.startsWith("+")) {
+                              lineClass += " diff-line-add";
+                            } else if (line.startsWith("-")) {
+                              lineClass += " diff-line-del";
+                            } else if (line.startsWith("@@")) {
+                              lineClass += " diff-line-hunk";
+                            }
+                            return (
+                              <span key={idx} className={lineClass}>
+                                {line || " "}
+                              </span>
+                            );
+                          })}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center flex-1 text-slate-400 p-8">
+                      <FileCode2 size={40} className="mb-3 text-slate-600 opacity-60" />
+                      <p className="text-sm font-medium">请从左侧选择一个改动文件查看代码差异</p>
+                      <p className="text-xs text-slate-500 mt-1">ChatGPT 产生的文件改动将在此处以高亮 Diff 呈现</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {view === "logs" && (
             <>
