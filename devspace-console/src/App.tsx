@@ -495,11 +495,16 @@ function App() {
   const [serviceActionBusy, setServiceActionBusy] = useState(false);
   const [serviceFeedback, setServiceFeedback] = useState<string | null>(null);
 
-  // Cloudflare Tunnel management states
+  // Cloudflare Tunnel & Custom Public Domain management states
   const [tunnelInfo, setTunnelInfo] = useState<CloudflaredTunnelInfo | null>(null);
   const [tunnelActionBusy, setTunnelActionBusy] = useState(false);
   const [tunnelFeedback, setTunnelFeedback] = useState<string | null>(null);
   const [showTunnelLogs, setShowTunnelLogs] = useState(false);
+  const [gptmcpConfig, setGptmcpConfig] = useState<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null } | null>(null);
+  const [customDomainInput, setCustomDomainInput] = useState<string>("");
+  const [domainSaving, setDomainSaving] = useState(false);
+  const [domainFeedback, setDomainFeedback] = useState<string | null>(null);
+  const [showDomainEditor, setShowDomainEditor] = useState(false);
 
   // Project Root & Drive selection states
   const [projectPathInfo, setProjectPathInfo] = useState<ProjectPathInfo | null>(null);
@@ -585,6 +590,36 @@ function App() {
     }
   };
 
+  const updateGptmcpConfig = useCallback(async () => {
+    try {
+      const config = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>("get_gptmcp_config");
+      setGptmcpConfig(config);
+      if (config.publicBaseUrl) {
+        setCustomDomainInput(config.publicBaseUrl);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleSaveDomain = async (urlToSave?: string | null) => {
+    setDomainSaving(true);
+    setDomainFeedback("正在保存公网域名配置并重启服务…");
+    try {
+      const targetUrl = urlToSave !== undefined ? urlToSave : (customDomainInput.trim() ? customDomainInput.trim() : null);
+      const res = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>("set_gptmcp_public_url", { url: targetUrl });
+      setGptmcpConfig(res);
+      setDomainFeedback(targetUrl ? `固定公网域名已保存并生效: ${targetUrl}` : "已清除公网域名 (恢复本地 127.0.0.1 模式)");
+      setShowDomainEditor(false);
+      await refreshAll();
+    } catch (err) {
+      setDomainFeedback(`保存域名失败: ${String(err)}`);
+    } finally {
+      setDomainSaving(false);
+      setTimeout(() => setDomainFeedback(null), 5000);
+    }
+  };
+
   const updateProjectPathInfo = useCallback(async () => {
     try {
       const info = await invoke<ProjectPathInfo>("get_project_path_info");
@@ -619,6 +654,7 @@ function App() {
       await updateStatus();
       await updateTunnelStatus();
       await updateProjectPathInfo();
+      await updateGptmcpConfig();
     };
     void runUpdate();
     const timer = window.setInterval(() => void runUpdate(), 4_000);
@@ -626,7 +662,7 @@ function App() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [updateTunnelStatus, updateProjectPathInfo]);
+  }, [updateTunnelStatus, updateProjectPathInfo, updateGptmcpConfig]);
 
   useEffect(() => {
     if (!workspace) {
@@ -1552,7 +1588,16 @@ function App() {
                   <div className="monitor-endpoint-label">
                     <Globe size={15} color="var(--monitor-blue)" />
                     <strong>ChatGPT MCP 连接端点 (Endpoint URL)</strong>
-                    <span className="monitor-endpoint-tag">{publicTunnelUrl ? (tunnelInfo?.url ? "TryCloudflare 临时域名" : "公网就绪") : "本地模式"}</span>
+                    <span className="monitor-endpoint-tag">{publicTunnelUrl ? (tunnelInfo?.url ? "TryCloudflare 临时域名" : "自定义公网域名") : "本地模式"}</span>
+                    <button
+                      className="service-action-btn"
+                      style={{ marginLeft: "auto", padding: "3px 8px", fontSize: 11 }}
+                      onClick={() => setShowDomainEditor(!showDomainEditor)}
+                      title="配置自定义固定公网域名 (如自有服务器反代域名)"
+                    >
+                      <Settings size={12} />
+                      {showDomainEditor ? "收起域名设置" : (gptmcpConfig?.publicBaseUrl ? "修改固定公网域名" : "配置固定公网域名")}
+                    </button>
                   </div>
                   <div className="monitor-endpoint-input-wrap">
                     <input
@@ -1571,6 +1616,51 @@ function App() {
                       {mcpUrlCopied ? "已复制" : "复制端点"}
                     </button>
                   </div>
+
+                  {showDomainEditor && (
+                    <div style={{ marginTop: 10, padding: 12, borderRadius: 8, background: "var(--monitor-panel)", border: "1px solid var(--monitor-line)" }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--monitor-text)" }}>
+                        🌐 配置固定公网 Base URL（支持自有反代域名）
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input
+                          type="text"
+                          className="monitor-endpoint-input"
+                          style={{ flex: 1, padding: "6px 10px", fontSize: 13, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
+                          placeholder="例如: https://devspace.do3bvk.cn"
+                          value={customDomainInput}
+                          onChange={(e) => setCustomDomainInput(e.target.value)}
+                        />
+                        <button
+                          className="service-action-btn start"
+                          disabled={domainSaving}
+                          onClick={() => void handleSaveDomain()}
+                        >
+                          {domainSaving ? "保存中…" : "保存并生效"}
+                        </button>
+                        {gptmcpConfig?.publicBaseUrl && (
+                          <button
+                            className="service-action-btn stop"
+                            disabled={domainSaving}
+                            onClick={() => void handleSaveDomain(null)}
+                            title="清除已配置的公网域名"
+                          >
+                            清除域名
+                          </button>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 6 }}>
+                        保存后将自动更新 <code>config.json</code> 中的 <code>publicBaseUrl</code> 与 <code>allowedHosts</code> 白名单并重启服务，无需命令行操作。
+                      </div>
+                    </div>
+                  )}
+
+                  {domainFeedback && (
+                    <div className="monitor-inline-error" style={{ background: "var(--monitor-panel-soft)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)", marginTop: 8 }}>
+                      {domainFeedback}
+                    </div>
+                  )}
+
                   <div className="monitor-endpoint-hint">
                     💡 在 ChatGPT 网页/客户端创建 GPTs 或自定义 Actions 时，直接在 MCP Server URL 中填入上方完整端点。
                   </div>

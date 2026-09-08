@@ -922,6 +922,122 @@ async fn revert_workspace_file(workspace_path: Option<String>, file_path: String
     }
 }
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GptmcpConfigInfo {
+    public_base_url: Option<String>,
+    owner_token: Option<String>,
+    allowed_roots: Vec<String>,
+    config_dir: Option<String>,
+}
+
+#[tauri::command]
+async fn get_gptmcp_config() -> Result<GptmcpConfigInfo, String> {
+    let dir = if let Ok(Some(existing)) = active_config_dir() {
+        existing
+    } else {
+        let home = env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| "无法解析用户主目录".to_string())?;
+        home.join(".gptmcp")
+    };
+
+    let config_file = dir.join("config.json");
+    let mut public_base_url = None;
+    let mut allowed_roots = Vec::new();
+    if config_file.is_file() {
+        if let Ok(content) = fs::read_to_string(&config_file) {
+            if let Ok(v) = serde_json::from_str::<Value>(&content) {
+                public_base_url = v.get("publicBaseUrl").and_then(Value::as_str).map(str::to_owned);
+                if let Some(roots) = v.get("allowedRoots").and_then(Value::as_array) {
+                    allowed_roots = roots.iter().filter_map(|r| r.as_str().map(str::to_owned)).collect();
+                }
+            }
+        }
+    }
+
+    let auth_file = dir.join("auth.json");
+    let mut token = None;
+    if auth_file.is_file() {
+        if let Ok(content) = fs::read_to_string(&auth_file) {
+            if let Ok(v) = serde_json::from_str::<Value>(&content) {
+                token = v.get("ownerToken").and_then(Value::as_str).map(str::to_owned);
+            }
+        }
+    }
+
+    Ok(GptmcpConfigInfo {
+        public_base_url,
+        owner_token: token,
+        allowed_roots,
+        config_dir: Some(dir.to_string_lossy().to_string()),
+    })
+}
+
+#[tauri::command]
+async fn set_gptmcp_public_url(url: Option<String>) -> Result<GptmcpConfigInfo, String> {
+    let dir = if let Ok(Some(existing)) = active_config_dir() {
+        existing
+    } else {
+        let home = env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| "无法解析用户主目录".to_string())?;
+        let config_dir = home.join(".gptmcp");
+        let _ = fs::create_dir_all(&config_dir);
+        config_dir
+    };
+
+    let config_file = dir.join("config.json");
+    let mut config_val: Value = if config_file.is_file() {
+        fs::read_to_string(&config_file)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({
+            "host": "127.0.0.1",
+            "port": 7676,
+            "artifactsEnabled": true
+        })
+    };
+
+    let clean_url = url.filter(|u| !u.trim().is_empty()).map(|u| u.trim().trim_end_matches('/').to_string());
+    if let Some(ref u) = clean_url {
+        config_val["publicBaseUrl"] = Value::String(u.clone());
+        if let Ok(parsed_url) = reqwest::Url::parse(u) {
+            if let Some(host) = parsed_url.host_str() {
+                let mut hosts = vec![
+                    "localhost".to_string(),
+                    "127.0.0.1".to_string(),
+                    "::1".to_string(),
+                    host.to_string(),
+                ];
+                if let Some(existing_hosts) = config_val.get("allowedHosts").and_then(Value::as_array) {
+                    for eh in existing_hosts.iter().filter_map(|v| v.as_str()) {
+                        if !hosts.iter().any(|h| h == eh) {
+                            hosts.push(eh.to_string());
+                        }
+                    }
+                }
+                config_val["allowedHosts"] = serde_json::json!(hosts);
+            }
+        }
+    } else {
+        config_val["publicBaseUrl"] = Value::Null;
+    }
+
+    let _ = fs::write(&config_file, serde_json::to_string_pretty(&config_val).unwrap_or_default());
+
+    // Auto restart service if currently running so new URL/host immediately takes effect
+    if check_health().await {
+        let _ = restart_gptmcp_service().await;
+    }
+
+    get_gptmcp_config().await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -936,7 +1052,9 @@ pub fn run() {
             set_custom_project_root,
             proxy_gptmcp_api,
             get_workspace_git_diff,
-            revert_workspace_file
+            revert_workspace_file,
+            get_gptmcp_config,
+            set_gptmcp_public_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running GPTMCP Console");
