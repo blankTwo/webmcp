@@ -1335,7 +1335,54 @@ export function createMcpServer(
     },
   );
 
-  server.registerTool(
+    server.registerTool(
+    "summary",
+    {
+      title: "Round summary",
+      description:
+        "Optional end-of-round tool to mark completion of the current user request. Provide a concise 1-paragraph summary of what was completed, verified, or changed. Do not use bullets or line breaks.",
+      inputSchema: {
+        workspaceId: optionalWorkspaceIdSchema(),
+        title: z.string().max(80).optional().describe("Optional short title for this round summary."),
+        summary: z.string().min(1).max(600).describe("One concise user-facing paragraph summarizing the result."),
+      },
+      outputSchema: resultOutputSchema({
+        title: z.string(),
+        summary: z.string(),
+        endedAt: z.string(),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ workspaceId, title, summary }, { _meta }) => {
+      const startedAt = performance.now();
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const text = summary.replace(/\s+/g, " ").trim();
+      const resultTitle = title?.trim() || "本轮处理完成";
+      logToolCall(config, {
+        tool: "summary",
+        workspaceId: workspace.id,
+        path: workspace.root,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+        consoleUi: consoleToolUi("summary", {
+          workspaceId: workspace.id,
+          path: workspace.root,
+          summary: { title: resultTitle, summary: text },
+        }),
+      });
+      return {
+        content: [textBlock(text)],
+        structuredContent: {
+          result: `Summary: ${resultTitle}`,
+          title: resultTitle,
+          summary: text,
+          endedAt: new Date().toISOString(),
+        },
+      };
+    },
+  );
+
+server.registerTool(
     "checkpoint",
     {
       title: "Save workspace checkpoint",
