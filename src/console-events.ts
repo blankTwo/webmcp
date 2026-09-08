@@ -104,9 +104,57 @@ export class ConsoleEventStore {
     if (!stateDir) return;
 
     this.database = openDatabase(stateDir);
+    this.ensureSchema();
     this.retentionDays = this.loadRetentionDays();
     this.lastTimestampMs = this.loadLatestTimestampMs();
     this.pruneExpired(true);
+  }
+
+  private ensureSchema(): void {
+    if (!this.database) return;
+    this.database.sqlite.exec(`
+      create table if not exists console_tool_events (
+        id text primary key,
+        timestamp text not null,
+        tool text not null,
+        workspace_id text,
+        path text,
+        working_directory text,
+        command_preview text,
+        command_length integer,
+        success integer not null,
+        duration_ms integer not null,
+        error text,
+        session_id integer,
+        running integer,
+        exit_code integer,
+        output_preview text,
+        favorite integer not null default 0,
+        console_ui_json text
+      );
+
+      create index if not exists console_tool_events_timestamp_idx
+        on console_tool_events(timestamp);
+
+      create index if not exists console_tool_events_workspace_timestamp_idx
+        on console_tool_events(workspace_id, timestamp);
+
+      create index if not exists console_tool_events_favorite_timestamp_idx
+        on console_tool_events(favorite, timestamp desc);
+
+      create table if not exists console_settings (
+        key text primary key,
+        value text not null,
+        updated_at text not null
+      );
+    `);
+
+    try {
+      this.database.sqlite.exec("alter table console_tool_events add column favorite integer not null default 0;");
+    } catch { /* Column already exists */ }
+    try {
+      this.database.sqlite.exec("alter table console_tool_events add column console_ui_json text;");
+    } catch { /* Column already exists */ }
   }
 
   publish(input: PublishConsoleToolEvent): ConsoleToolEvent {
