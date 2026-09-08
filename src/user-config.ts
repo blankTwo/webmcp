@@ -34,10 +34,17 @@ export interface DevspaceFiles {
   authExists: boolean;
   config: DevspaceUserConfig;
   auth: DevspaceAuthConfig;
+  legacy: boolean;
 }
 
 export function devspaceConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  return resolve(expandHomePath(env.DEVSPACE_CONFIG_DIR ?? join(homedir(), ".devspace")));
+  const configured = env.GPTMCP_CONFIG_DIR ?? env.DEVSPACE_CONFIG_DIR;
+  if (configured) return resolve(expandHomePath(configured));
+  const current = join(homedir(), ".gptmcp");
+  const legacy = join(homedir(), ".devspace");
+  return existsSync(join(current, "config.json")) || !existsSync(join(legacy, "config.json"))
+    ? current
+    : legacy;
 }
 
 export function devspaceConfigPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -67,6 +74,7 @@ export function loadDevspaceFiles(env: NodeJS.ProcessEnv = process.env): Devspac
     authExists,
     config: configExists ? readJsonFile<DevspaceUserConfig>(configPath) : {},
     auth: authExists ? readJsonFile<DevspaceAuthConfig>(authPath) : {},
+    legacy: dir === join(homedir(), ".devspace"),
   };
 }
 

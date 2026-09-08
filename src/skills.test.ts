@@ -97,10 +97,10 @@ try {
     [
       "---",
       "name: devspace-local-skill",
-      "description: DevSpace local skill description.",
+      "description: GPTMCP local skill description.",
       "---",
       "",
-      "# DevSpace Local Skill",
+      "# GPTMCP Local Skill",
     ].join("\n"),
   );
   await writeFile(

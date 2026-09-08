@@ -1,6 +1,6 @@
 import express from "express";
 import type { Server } from "node:http";
-import { DEVSPACE_VERSION } from "../version.js";
+import { GPTMCP_VERSION } from "../version.js";
 import {
   MAX_CONSOLE_RETENTION_DAYS,
   MIN_CONSOLE_RETENTION_DAYS,
@@ -34,7 +34,7 @@ export async function startConsoleServer(options: ConsoleServerOptions = {}): Pr
     res.json({
       ok: true,
       name: "console-server",
-      version: DEVSPACE_VERSION,
+      version: GPTMCP_VERSION,
       pid: process.pid,
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
     });
@@ -45,7 +45,7 @@ export async function startConsoleServer(options: ConsoleServerOptions = {}): Pr
     res.json({
       ok: true,
       name: "console-server",
-      version: DEVSPACE_VERSION,
+      version: GPTMCP_VERSION,
       pid: process.pid,
       host,
       port: actualPort(server, port),
@@ -74,7 +74,7 @@ export async function startConsoleServer(options: ConsoleServerOptions = {}): Pr
       server: {
         ok: true,
         name: "console-server",
-        version: DEVSPACE_VERSION,
+        version: GPTMCP_VERSION,
         uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
       },
       settings: store.settings(),

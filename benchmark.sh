@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# DevSpace MCP benchmark. Requires a real OAuth access token for /mcp.
+# GPTMCP MCP benchmark. Requires a real OAuth access token for /mcp.
 
 set -euo pipefail
 
-BASE_URL="${DEVSPACE_BASE_URL:-http://localhost:7676}"
-ACCESS_TOKEN="${DEVSPACE_ACCESS_TOKEN:-}"
-OWNER_TOKEN="${DEVSPACE_OWNER_TOKEN:-}"
-PROTOCOL_VERSION="${DEVSPACE_MCP_PROTOCOL_VERSION:-2025-11-25}"
+BASE_URL="${GPTMCP_BASE_URL:-http://localhost:7676}"
+ACCESS_TOKEN="${GPTMCP_ACCESS_TOKEN:-}"
+OWNER_TOKEN="${GPTMCP_OWNER_TOKEN:-}"
+PROTOCOL_VERSION="${GPTMCP_MCP_PROTOCOL_VERSION:-2025-11-25}"
 
 if [[ -z "$ACCESS_TOKEN" ]]; then
-  echo "Error: DEVSPACE_ACCESS_TOKEN is required." >&2
-  echo "Use a real OAuth access token issued for $BASE_URL/mcp; the DevSpace owner token is not a Bearer access token." >&2
+  echo "Error: GPTMCP_ACCESS_TOKEN is required." >&2
+  echo "Use a real OAuth access token issued for $BASE_URL/mcp; the GPTMCP owner token is not a Bearer access token." >&2
   exit 2
 fi
 
-if [[ -z "$OWNER_TOKEN" && -f "$HOME/.devspace/auth.json" ]]; then
-  OWNER_TOKEN="$(node -e 'const fs=require("node:fs"); const p=process.argv[1]; const v=JSON.parse(fs.readFileSync(p,"utf8")); process.stdout.write(v.ownerToken ?? "")' "$HOME/.devspace/auth.json")"
+if [[ -z "$OWNER_TOKEN" && -f "$HOME/.gptmcp/auth.json" ]]; then
+  OWNER_TOKEN="$(node -e 'const fs=require("node:fs"); const p=process.argv[1]; const v=JSON.parse(fs.readFileSync(p,"utf8")); process.stdout.write(v.ownerToken ?? "")' "$HOME/.gptmcp/auth.json")"
 fi
 
 if ! command -v npx >/dev/null 2>&1; then
@@ -27,13 +27,13 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 2
 fi
 
-echo "=== DevSpace MCP Performance Benchmark ==="
+echo "=== GPTMCP MCP Performance Benchmark ==="
 echo "Endpoint: $BASE_URL/mcp"
 echo "Protocol: $PROTOCOL_VERSION"
 echo
 
 TOOLS_LIST_BODY='{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
-INITIALIZE_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"devspace-benchmark","version":"1.0.0"}}}'
+INITIALIZE_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"gptmcp-benchmark","version":"1.0.0"}}}'
 
 mcp_curl() {
   curl -sS \
@@ -52,8 +52,8 @@ if [[ "$preflight_status" != "200" ]]; then
 fi
 
 cache_headers="$(mcp_curl -D - -o /dev/null -X POST -d "$TOOLS_LIST_BODY" "$BASE_URL/mcp")"
-if ! printf '%s\n' "$cache_headers" | grep -qi '^X-DevSpace-Cache: hit'; then
-  echo "Error: second tools/list request did not report X-DevSpace-Cache: hit." >&2
+if ! printf '%s\n' "$cache_headers" | grep -qi '^X-GPTMCP-Cache: hit'; then
+  echo "Error: second tools/list request did not report X-GPTMCP-Cache: hit." >&2
   echo "Refusing to report cached performance numbers." >&2
   exit 4
 fi
@@ -113,10 +113,10 @@ run_benchmark "Uncached initialize path (20 connections)" 20 10 "$INITIALIZE_BOD
 
 if [[ -n "$OWNER_TOKEN" ]]; then
   echo "=== Optimizer Statistics ==="
-  curl -sS -H "x-devspace-owner-token: $OWNER_TOKEN" "$BASE_URL/statusz/optimizer"
+  curl -sS -H "x-gptmcp-owner-token: $OWNER_TOKEN" "$BASE_URL/statusz/optimizer"
   echo
 else
-  echo "Optimizer statistics skipped: DEVSPACE_OWNER_TOKEN is not set and ~/.devspace/auth.json has no ownerToken."
+  echo "Optimizer statistics skipped: GPTMCP_OWNER_TOKEN is not set and ~/.gptmcp/auth.json has no ownerToken."
 fi
 
 echo "=== Benchmark Complete ==="

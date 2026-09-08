@@ -45,7 +45,7 @@ test("tools/list cache is partitioned by token, protocol version, and params", (
     protocolVersion: "2025-11-25",
     body: { jsonrpc: "2.0", id: 99, method: "tools/list", params: { scope: "a" } },
   }) as never, hitResponse.value as never), true);
-  assert.equal(hitResponse.result().headers.get("X-DevSpace-Cache"), "hit");
+  assert.equal(hitResponse.result().headers.get("X-GPTMCP-Cache"), "hit");
   assert.deepEqual(hitResponse.result().body, {
     jsonrpc: "2.0", id: 99, result: { tools: ["read"] },
   });

@@ -1,16 +1,16 @@
 import type { ServerConfig } from "./config.js";
 import { devspaceConfigDir } from "./user-config.js";
-import { DEVSPACE_VERSION } from "./version.js";
+import { GPTMCP_VERSION } from "./version.js";
 
-export interface DevSpaceHealth {
+export interface GPTMCPHealth {
   ok: true;
-  name: "devspace";
+  name: "gptmcp";
   version: string;
   nodeVersion: string;
   uptimeSeconds: number;
 }
 
-export interface DevSpaceRuntimeStatus extends DevSpaceHealth {
+export interface GPTMCPRuntimeStatus extends GPTMCPHealth {
   pid: number;
   cwd: string;
   execPath: string;
@@ -41,11 +41,11 @@ export interface DevSpaceRuntimeStatus extends DevSpaceHealth {
   logging: ServerConfig["logging"];
 }
 
-export function createHealthStatus(): DevSpaceHealth {
+export function createHealthStatus(): GPTMCPHealth {
   return {
     ok: true,
-    name: "devspace",
-    version: DEVSPACE_VERSION,
+    name: "gptmcp",
+    version: GPTMCP_VERSION,
     nodeVersion: process.version,
     uptimeSeconds: Math.floor(process.uptime()),
   };
@@ -54,7 +54,7 @@ export function createHealthStatus(): DevSpaceHealth {
 export function createRuntimeStatus(
   config: ServerConfig,
   env: NodeJS.ProcessEnv = process.env,
-): DevSpaceRuntimeStatus {
+): GPTMCPRuntimeStatus {
   return {
     ...createHealthStatus(),
     pid: process.pid,
@@ -89,37 +89,37 @@ export function createRuntimeStatus(
 }
 
 export function restartEnvironment(
-  status: DevSpaceRuntimeStatus,
+  status: GPTMCPRuntimeStatus,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   return {
     ...baseEnv,
-    DEVSPACE_CONFIG_DIR: status.configDir,
+    GPTMCP_CONFIG_DIR: status.configDir,
     HOST: status.host,
     PORT: String(status.port),
-    DEVSPACE_PUBLIC_BASE_URL: status.publicBaseUrl,
-    DEVSPACE_ALLOWED_ROOTS: status.allowedRoots.join(","),
-    DEVSPACE_ALLOWED_HOSTS: status.allowedHosts.join(","),
-    DEVSPACE_TOOL_MODE: status.toolMode,
-    DEVSPACE_WIDGETS: status.widgets,
-    DEVSPACE_STATE_DIR: status.stateDir,
-    DEVSPACE_WORKTREE_ROOT: status.worktreeRoot,
-    DEVSPACE_ARTIFACTS: status.artifactsEnabled ? "1" : "0",
-    DEVSPACE_ARTIFACT_MAX_FILE_BYTES: String(status.artifactMaxFileBytes),
-    DEVSPACE_SKILLS: status.skillsEnabled ? "1" : "0",
-    DEVSPACE_SKILL_PATHS: status.skillPaths.join(","),
-    DEVSPACE_AGENT_DIR: status.agentDir,
-    DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS: String(status.oauth.accessTokenTtlSeconds),
-    DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS: String(status.oauth.refreshTokenTtlSeconds),
-    DEVSPACE_OAUTH_SCOPES: status.oauth.scopes.join(","),
-    DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS: status.oauth.allowedRedirectHosts.join(","),
-    DEVSPACE_LOG_LEVEL: status.logging.level,
-    DEVSPACE_LOG_FORMAT: status.logging.format,
-    DEVSPACE_LOG_REQUESTS: status.logging.requests ? "1" : "0",
-    DEVSPACE_LOG_ASSETS: status.logging.assets ? "1" : "0",
-    DEVSPACE_LOG_TOOL_CALLS: status.logging.toolCalls ? "1" : "0",
-    DEVSPACE_LOG_SHELL_COMMANDS: status.logging.shellCommands ? "1" : "0",
-    DEVSPACE_TRUST_PROXY: status.logging.trustProxy ? "1" : "0",
+    GPTMCP_PUBLIC_BASE_URL: status.publicBaseUrl,
+    GPTMCP_ALLOWED_ROOTS: status.allowedRoots.join(","),
+    GPTMCP_ALLOWED_HOSTS: status.allowedHosts.join(","),
+    GPTMCP_TOOL_MODE: status.toolMode,
+    GPTMCP_WIDGETS: status.widgets,
+    GPTMCP_STATE_DIR: status.stateDir,
+    GPTMCP_WORKTREE_ROOT: status.worktreeRoot,
+    GPTMCP_ARTIFACTS: status.artifactsEnabled ? "1" : "0",
+    GPTMCP_ARTIFACT_MAX_FILE_BYTES: String(status.artifactMaxFileBytes),
+    GPTMCP_SKILLS: status.skillsEnabled ? "1" : "0",
+    GPTMCP_SKILL_PATHS: status.skillPaths.join(","),
+    GPTMCP_AGENT_DIR: status.agentDir,
+    GPTMCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS: String(status.oauth.accessTokenTtlSeconds),
+    GPTMCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS: String(status.oauth.refreshTokenTtlSeconds),
+    GPTMCP_OAUTH_SCOPES: status.oauth.scopes.join(","),
+    GPTMCP_OAUTH_ALLOWED_REDIRECT_HOSTS: status.oauth.allowedRedirectHosts.join(","),
+    GPTMCP_LOG_LEVEL: status.logging.level,
+    GPTMCP_LOG_FORMAT: status.logging.format,
+    GPTMCP_LOG_REQUESTS: status.logging.requests ? "1" : "0",
+    GPTMCP_LOG_ASSETS: status.logging.assets ? "1" : "0",
+    GPTMCP_LOG_TOOL_CALLS: status.logging.toolCalls ? "1" : "0",
+    GPTMCP_LOG_SHELL_COMMANDS: status.logging.shellCommands ? "1" : "0",
+    GPTMCP_TRUST_PROXY: status.logging.trustProxy ? "1" : "0",
   };
 }
 

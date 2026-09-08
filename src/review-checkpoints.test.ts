@@ -201,7 +201,7 @@ async function committedRepository(t: TestContext): Promise<string> {
   t.after(() => rm(root, { recursive: true, force: true }));
   await git(root, ["init"]);
   await git(root, ["config", "user.email", "devspace@example.com"]);
-  await git(root, ["config", "user.name", "DevSpace Test"]);
+  await git(root, ["config", "user.name", "GPTMCP Test"]);
   await writeFile(join(root, "README.md"), "hello\n");
   await git(root, ["add", "README.md"]);
   await git(root, ["commit", "-m", "Initial commit"]);
@@ -213,7 +213,7 @@ async function unbornRepository(t: TestContext): Promise<string> {
   t.after(() => rm(root, { recursive: true, force: true }));
   await git(root, ["init"]);
   await git(root, ["config", "user.email", "devspace@example.com"]);
-  await git(root, ["config", "user.name", "DevSpace Test"]);
+  await git(root, ["config", "user.name", "GPTMCP Test"]);
   return root;
 }
 

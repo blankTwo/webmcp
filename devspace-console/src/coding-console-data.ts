@@ -1,6 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { consoleApi, withQuery } from "./console-api";
 import type { ConsoleToolUi, LogEvent, LogKind, LogStatus, WorkspaceItem } from "./types";
 
 interface RawWorkspaceSession {
@@ -69,12 +68,6 @@ export interface WorkspaceHistoryState {
   loaded: boolean;
   loading: boolean;
   error?: string;
-}
-
-interface AddWorkspaceResponse {
-  ok: boolean;
-  workspace: RawWorkspaceSession;
-  reused: boolean;
 }
 
 interface UpdateFavoriteResponse {
@@ -298,7 +291,7 @@ function mapData(
   return { workspaces, events };
 }
 
-export function useDevSpaceData() {
+export function useCodingConsoleData() {
   const [sessions, setSessions] = useState<RawWorkspaceSession[]>([]);
   const [rawEvents, setRawEvents] = useState<RawConsoleEvent[]>([]);
   const [serverVersion, setServerVersion] = useState("—");
@@ -316,7 +309,7 @@ export function useDevSpaceData() {
 
   const refresh = useCallback(async () => {
     try {
-      const snapshot = await invoke<ConsoleSnapshot>("fetch_console_snapshot");
+      const snapshot = await consoleApi<ConsoleSnapshot>("GET", "/console/snapshot?limit=160");
       setSessions(snapshot.workspaces);
       setRawEvents((current) => mergeRawEvents(current, snapshot.events));
       setServerVersion(snapshot.server.version);
@@ -338,31 +331,9 @@ export function useDevSpaceData() {
 
   useEffect(() => {
     void refresh();
-
-    let disposed = false;
-    let unlistenEvent: (() => void) | undefined;
-    let unlistenStatus: (() => void) | undefined;
-
-    void listen<RawConsoleEvent>("devspace-tool-event", (message) => {
-      if (disposed) return;
-      setRawEvents((current) => mergeRawEvents(current, [message.payload]));
-      setStoredEvents((current) => current + 1);
-      if (message.payload.tool === "open_workspace") void refresh();
-    }).then((unlisten) => { unlistenEvent = unlisten; });
-
-    void listen<{ connected: boolean; error?: string }>("devspace-stream-status", (message) => {
-      if (disposed) return;
-      setConnected(Boolean(message.payload.connected));
-      if (message.payload.error) setError(message.payload.error);
-      else if (message.payload.connected) setError(null);
-    }).then((unlisten) => { unlistenStatus = unlisten; });
-
-    const timer = window.setInterval(() => void refresh(), 15_000);
+    const timer = window.setInterval(() => void refresh(), 2_000);
     return () => {
-      disposed = true;
       window.clearInterval(timer);
-      unlistenEvent?.();
-      unlistenStatus?.();
     };
   }, [refresh]);
 
@@ -387,11 +358,14 @@ export function useDevSpaceData() {
     setHistoryByWorkspace(historyRef.current);
 
     try {
-      const response = await invoke<ConsoleHistoryResponse>("fetch_console_history", {
-        workspaceRoot,
-        before: options.loadMore && !options.reset ? existing?.nextCursor ?? null : null,
-        limit: 100,
-      });
+      const response = await consoleApi<ConsoleHistoryResponse>(
+        "GET",
+        withQuery("/console/history", {
+          workspaceRoot,
+          before: options.loadMore && !options.reset ? existing?.nextCursor : undefined,
+          limit: 100,
+        }),
+      );
       setRawEvents((current) => mergeRawEvents(current, response.events));
       const loadedState: WorkspaceHistoryState = {
         nextCursor: response.nextCursor,
@@ -417,18 +391,12 @@ export function useDevSpaceData() {
     }
   }, []);
 
-  const addWorkspace = useCallback(async (path: string) => {
-    const response = await invoke<AddWorkspaceResponse>("add_console_workspace", { path });
-    setSessions((current) => {
-      const next = current.filter((session) => session.id !== response.workspace.id);
-      return [response.workspace, ...next];
-    });
-    await refresh();
-    return response.workspace;
-  }, [refresh]);
-
   const setEventFavorite = useCallback(async (id: string, favorite: boolean) => {
-    const response = await invoke<UpdateFavoriteResponse>("set_console_event_favorite", { id, favorite });
+    const response = await consoleApi<UpdateFavoriteResponse>(
+      "PUT",
+      `/console/events/${encodeURIComponent(id)}/favorite`,
+      { favorite },
+    );
     setRawEvents((current) => mergeRawEvents(current, [response.event]));
     return response.event;
   }, []);
@@ -448,7 +416,7 @@ export function useDevSpaceData() {
   };
 
   const updateRetentionDays = useCallback(async (days: number) => {
-    const response = await invoke<UpdateConsoleSettingsResponse>("update_console_settings", {
+    const response = await consoleApi<UpdateConsoleSettingsResponse>("PUT", "/console/settings", {
       retentionDays: days,
     });
     applyStorageSettings(response.settings);
@@ -457,14 +425,14 @@ export function useDevSpaceData() {
   }, [resetEventCache]);
 
   const cleanupEvents = useCallback(async () => {
-    const response = await invoke<UpdateConsoleSettingsResponse>("cleanup_console_events");
+    const response = await consoleApi<UpdateConsoleSettingsResponse>("POST", "/console/cleanup");
     applyStorageSettings(response.settings);
     await resetEventCache();
     return response.settings;
   }, [resetEventCache]);
 
   const clearEvents = useCallback(async () => {
-    const response = await invoke<UpdateConsoleSettingsResponse>("clear_console_events");
+    const response = await consoleApi<UpdateConsoleSettingsResponse>("DELETE", "/console/events");
     applyStorageSettings(response.settings);
     await resetEventCache();
     return response.settings;
@@ -489,7 +457,6 @@ export function useDevSpaceData() {
     historyByWorkspace,
     loadWorkspaceHistory,
     setEventFavorite,
-    addWorkspace,
     cleanupEvents,
     clearEvents,
   };

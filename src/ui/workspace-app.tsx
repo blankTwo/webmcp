@@ -45,7 +45,7 @@ let hostContext: HostContext | undefined;
 let card: ToolResultCard | null = null;
 let toolArguments: Record<string, unknown> = {};
 const declaredTool = toolNameFromDocument();
-const declaredVersion = document.querySelector<HTMLMetaElement>('meta[name="devspace-version"]')?.content || "unknown";
+const declaredVersion = document.querySelector<HTMLMetaElement>('meta[name="gptmcp-version"]')?.content || "unknown";
 let expanded = false;
 let reviewFilesExpanded = false;
 let errorMessage: string | null = null;
@@ -67,7 +67,7 @@ void boot();
 async function boot(): Promise<void> {
   render();
 
-  app = new ToolCardApp({ name: "devspace-tool-cards", version: declaredVersion });
+  app = new ToolCardApp({ name: "gptmcp-tool-cards", version: declaredVersion });
 
   app.ontoolinputpartial = (input) => {
     updateRunningTool(input.arguments, true);
@@ -923,7 +923,7 @@ function renderWorkspaceChips(chips: WorkspaceChip[]): HTMLElement {
 }
 
 function toolNameFromDocument(): ToolName | undefined {
-  const value = document.querySelector<HTMLMetaElement>('meta[name="devspace-tool"]')?.content;
+  const value = document.querySelector<HTMLMetaElement>('meta[name="gptmcp-tool"]')?.content;
   return isToolName(value) ? value : undefined;
 }
 

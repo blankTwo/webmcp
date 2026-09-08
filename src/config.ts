@@ -26,7 +26,7 @@ export interface ServerConfig {
   artifactMaxFileBytes: number;
   skillsEnabled: boolean;
   skillPaths: string[];
-  devspaceSkillsDir: string;
+  gptmcpSkillsDir: string;
   agentDir: string;
   logging: LoggingConfig;
 }
@@ -82,13 +82,18 @@ function parseBoolean(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes(value?.toLowerCase() ?? "");
 }
 
-function parseToolMode(env: NodeJS.ProcessEnv): ToolMode {
-  const mode = env.DEVSPACE_TOOL_MODE;
-  if (mode === "minimal" || mode === "full" || mode === "codex") return mode;
-  if (mode) throw new Error(`Invalid DEVSPACE_TOOL_MODE: ${mode}`);
+function configEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  return env[`GPTMCP_${name}`] ?? env[`DEVSPACE_${name}`];
+}
 
-  if (env.DEVSPACE_MINIMAL_TOOLS !== undefined) {
-    return parseBoolean(env.DEVSPACE_MINIMAL_TOOLS) ? "minimal" : "full";
+function parseToolMode(env: NodeJS.ProcessEnv): ToolMode {
+  const mode = configEnv(env, "TOOL_MODE");
+  if (mode === "minimal" || mode === "full" || mode === "codex") return mode;
+  if (mode) throw new Error(`Invalid GPTMCP_TOOL_MODE: ${mode}`);
+
+  const legacyMinimalTools = configEnv(env, "MINIMAL_TOOLS");
+  if (legacyMinimalTools !== undefined) {
+    return parseBoolean(legacyMinimalTools) ? "minimal" : "full";
   }
   return "full";
 }
@@ -97,14 +102,14 @@ function parseLogLevel(value: string | undefined): LogLevel {
   if (!value || value === "info") return "info";
   if (["silent", "error", "warn", "debug"].includes(value)) return value as LogLevel;
 
-  throw new Error(`Invalid DEVSPACE_LOG_LEVEL: ${value}`);
+  throw new Error(`Invalid GPTMCP_LOG_LEVEL: ${value}`);
 }
 
 function parseLogFormat(value: string | undefined): LogFormat {
   if (!value || value === "json") return "json";
   if (value === "pretty") return "pretty";
 
-  throw new Error(`Invalid DEVSPACE_LOG_FORMAT: ${value}`);
+  throw new Error(`Invalid GPTMCP_LOG_FORMAT: ${value}`);
 }
 
 function parsePathList(value: string | undefined): string[] {
@@ -143,26 +148,26 @@ function parsePositiveInteger(
 
 function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
   return {
-    level: parseLogLevel(env.DEVSPACE_LOG_LEVEL),
-    format: parseLogFormat(env.DEVSPACE_LOG_FORMAT),
-    requests: env.DEVSPACE_LOG_REQUESTS === undefined ? true : parseBoolean(env.DEVSPACE_LOG_REQUESTS),
-    assets: parseBoolean(env.DEVSPACE_LOG_ASSETS),
-    toolCalls: env.DEVSPACE_LOG_TOOL_CALLS === undefined ? true : parseBoolean(env.DEVSPACE_LOG_TOOL_CALLS),
-    shellCommands: parseBoolean(env.DEVSPACE_LOG_SHELL_COMMANDS),
-    trustProxy: parseBoolean(env.DEVSPACE_TRUST_PROXY),
+    level: parseLogLevel(configEnv(env, "LOG_LEVEL")),
+    format: parseLogFormat(configEnv(env, "LOG_FORMAT")),
+    requests: configEnv(env, "LOG_REQUESTS") === undefined ? true : parseBoolean(configEnv(env, "LOG_REQUESTS")),
+    assets: parseBoolean(configEnv(env, "LOG_ASSETS")),
+    toolCalls: configEnv(env, "LOG_TOOL_CALLS") === undefined ? true : parseBoolean(configEnv(env, "LOG_TOOL_CALLS")),
+    shellCommands: parseBoolean(configEnv(env, "LOG_SHELL_COMMANDS")),
+    trustProxy: parseBoolean(configEnv(env, "TRUST_PROXY")),
   };
 }
 
 function parseWidgetMode(value: string | undefined): WidgetMode {
   if (!value || value === "off" || value === "changes" || value === "full") return "off";
 
-  throw new Error(`Invalid DEVSPACE_WIDGETS: ${value}`);
+  throw new Error(`Invalid GPTMCP_WIDGETS: ${value}`);
 }
 
 function parseRequiredSecret(value: string | undefined, name: string): string {
   const secret = value?.trim();
   if (!secret) {
-    throw new Error(`${name} is required for DevSpace OAuth. Run: devspace init`);
+    throw new Error(`${name} is required for GPTMCP OAuth. Run: gptmcp init`);
   }
   if (secret.length < 16) {
     throw new Error(`${name} must be at least 16 characters long.`);
@@ -172,19 +177,19 @@ function parseRequiredSecret(value: string | undefined, name: string): string {
 
 function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined): OAuthConfig {
   return {
-    ownerToken: parseRequiredSecret(env.DEVSPACE_OAUTH_OWNER_TOKEN ?? ownerToken, "DEVSPACE_OAUTH_OWNER_TOKEN"),
+    ownerToken: parseRequiredSecret(configEnv(env, "OAUTH_OWNER_TOKEN") ?? ownerToken, "GPTMCP_OAUTH_OWNER_TOKEN"),
     accessTokenTtlSeconds: parsePositiveInteger(
-      env.DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+      configEnv(env, "OAUTH_ACCESS_TOKEN_TTL_SECONDS"),
       DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
-      "DEVSPACE_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
+      "GPTMCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
     ),
     refreshTokenTtlSeconds: parsePositiveInteger(
-      env.DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS,
+      configEnv(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS"),
       DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS,
-      "DEVSPACE_OAUTH_REFRESH_TOKEN_TTL_SECONDS",
+      "GPTMCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS",
     ),
-    scopes: parseStringList(env.DEVSPACE_OAUTH_SCOPES, ["devspace"]),
-    allowedRedirectHosts: parseStringList(env.DEVSPACE_OAUTH_ALLOWED_REDIRECT_HOSTS, [
+    scopes: parseStringList(env.GPTMCP_OAUTH_SCOPES ?? env.DEVSPACE_OAUTH_SCOPES, ["gptmcp"]),
+    allowedRedirectHosts: parseStringList(configEnv(env, "OAUTH_ALLOWED_REDIRECT_HOSTS"), [
       "chatgpt.com",
       "localhost",
       "127.0.0.1",
@@ -192,12 +197,12 @@ function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined
   };
 }
 
-function defaultStateDir(): string {
-  return join(homedir(), ".local", "share", "devspace");
+function defaultStateDir(legacy: boolean): string {
+  return join(homedir(), ".local", "share", legacy ? "devspace" : "gptmcp");
 }
 
-function defaultWorktreeRoot(): string {
-  return join(homedir(), ".devspace", "worktrees");
+function defaultWorktreeRoot(legacy: boolean): string {
+  return join(homedir(), legacy ? ".devspace" : ".gptmcp", "worktrees");
 }
 
 function defaultAgentDir(): string {
@@ -209,7 +214,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const host = env.HOST ?? files.config.host ?? "127.0.0.1";
   const port = parsePort(env.PORT ?? files.config.port);
   const publicBaseUrl = parsePublicBaseUrl(
-    env.DEVSPACE_PUBLIC_BASE_URL ?? files.config.publicBaseUrl ?? localPublicBaseUrl(host, port),
+    env.GPTMCP_PUBLIC_BASE_URL ?? env.DEVSPACE_PUBLIC_BASE_URL ?? files.config.publicBaseUrl ?? localPublicBaseUrl(host, port),
   );
   const derivedAllowedHosts = [
     "localhost",
@@ -224,26 +229,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     host,
     port,
     oauth: parseOAuthConfig(env, files.auth.ownerToken),
-    allowedRoots: parseAllowedRoots(env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
-    allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
+    allowedRoots: parseAllowedRoots(env.GPTMCP_ALLOWED_ROOTS ?? env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
+    allowedHosts: parseAllowedHosts(env.GPTMCP_ALLOWED_HOSTS ?? env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
     publicBaseUrl,
     toolMode: parseToolMode(env),
-    widgets: parseWidgetMode(env.DEVSPACE_WIDGETS),
-    stateDir: resolve(expandHomePath(env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir())),
-    worktreeRoot: resolve(expandHomePath(env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
+    widgets: parseWidgetMode(configEnv(env, "WIDGETS")),
+    stateDir: resolve(expandHomePath(env.GPTMCP_STATE_DIR ?? env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir(files.legacy))),
+    worktreeRoot: resolve(expandHomePath(env.GPTMCP_WORKTREE_ROOT ?? env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot(files.legacy))),
     artifactsEnabled:
-      env.DEVSPACE_ARTIFACTS === undefined
+      configEnv(env, "ARTIFACTS") === undefined
         ? files.config.artifactsEnabled === true
-        : parseBoolean(env.DEVSPACE_ARTIFACTS),
+        : parseBoolean(configEnv(env, "ARTIFACTS")),
     artifactMaxFileBytes: parsePositiveInteger(
-      env.DEVSPACE_ARTIFACT_MAX_FILE_BYTES ?? numberConfigValue(files.config.artifactMaxFileBytes),
+      configEnv(env, "ARTIFACT_MAX_FILE_BYTES") ?? numberConfigValue(files.config.artifactMaxFileBytes),
       DEFAULT_ARTIFACT_MAX_FILE_BYTES,
-      "DEVSPACE_ARTIFACT_MAX_FILE_BYTES",
+      "GPTMCP_ARTIFACT_MAX_FILE_BYTES",
     ),
-    skillsEnabled: env.DEVSPACE_SKILLS === undefined ? true : parseBoolean(env.DEVSPACE_SKILLS),
-    skillPaths: parsePathList(env.DEVSPACE_SKILL_PATHS),
-    devspaceSkillsDir: devspaceSkillsDir(env),
-    agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
+    skillsEnabled: configEnv(env, "SKILLS") === undefined ? true : parseBoolean(configEnv(env, "SKILLS")),
+    skillPaths: parsePathList(configEnv(env, "SKILL_PATHS")),
+    gptmcpSkillsDir: devspaceSkillsDir(env),
+    agentDir: resolve(expandHomePath(configEnv(env, "AGENT_DIR") ?? files.config.agentDir ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
   };
 }

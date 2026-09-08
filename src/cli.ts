@@ -19,9 +19,9 @@ import { shutdownHttpServer } from "./server-shutdown.js";
 import {
   localServerUrl,
   restartEnvironment,
-  type DevSpaceRuntimeStatus,
+  type GPTMCPRuntimeStatus,
 } from "./runtime-status.js";
-import { DEVSPACE_NODE_RANGE, DEVSPACE_VERSION } from "./version.js";
+import { GPTMCP_NODE_RANGE, GPTMCP_VERSION } from "./version.js";
 
 type Command = "serve" | "init" | "status" | "restart" | "doctor" | "config" | "help" | "version";
 const require = createRequire(import.meta.url);
@@ -75,17 +75,17 @@ function normalizeCommand(command: string | undefined): Command {
 async function ensureConfigured(): Promise<void> {
   const files = loadDevspaceFiles();
   if (files.configExists && files.authExists) return;
-  if (process.env.DEVSPACE_OAUTH_OWNER_TOKEN) return;
+  if (process.env.GPTMCP_OAUTH_OWNER_TOKEN ?? process.env.DEVSPACE_OAUTH_OWNER_TOKEN) return;
 
   if (!input.isTTY || !output.isTTY) {
     throw new Error(
       [
-        "DevSpace is not configured and this terminal is non-interactive.",
+        "GPTMCP is not configured and this terminal is non-interactive.",
         "",
         "Run:",
-        "  devspace init",
+        "  gptmcp init",
         "",
-        "Or provide DEVSPACE_OAUTH_OWNER_TOKEN and DEVSPACE_ALLOWED_ROOTS.",
+        "Or provide GPTMCP_OAUTH_OWNER_TOKEN and GPTMCP_ALLOWED_ROOTS.",
       ].join("\n"),
     );
   }
@@ -96,13 +96,13 @@ async function ensureConfigured(): Promise<void> {
 async function runInit({ force }: { force: boolean }): Promise<void> {
   const files = loadDevspaceFiles();
   if (!force && files.configExists && files.authExists) {
-    prompts.log.info(`DevSpace is already configured at ${files.dir}`);
-    prompts.log.info("Run `devspace init --force` to update it.");
+    prompts.log.info(`GPTMCP is already configured at ${files.dir}`);
+    prompts.log.info("Run `gptmcp init --force` to update it.");
     return;
   }
 
   try {
-    prompts.intro("DevSpace setup");
+    prompts.intro("GPTMCP setup");
 
     const defaultRoots = files.config.allowedRoots?.join(", ") || process.cwd();
     const rootsAnswer = await textPrompt({
@@ -118,7 +118,7 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
 
     const defaultPort = String(files.config.port ?? 7676);
     const portAnswer = await textPrompt({
-      message: `Which local port should DevSpace use? Press Enter to use ${defaultPort}`,
+      message: `Which local port should GPTMCP use? Press Enter to use ${defaultPort}`,
       placeholder: defaultPort,
       defaultValue: defaultPort,
       validate: validatePort,
@@ -127,7 +127,7 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
 
     prompts.note(
       [
-        "DevSpace needs a public base URL so ChatGPT or Claude can reach this MCP server.",
+        "GPTMCP needs a public base URL so ChatGPT can reach this MCP server.",
         "Create a tunnel or reverse proxy with Cloudflare Tunnel, ngrok, Pinggy, Tailscale Funnel, or your own HTTPS proxy.",
         "Paste the public origin here, without /mcp.",
         "",
@@ -163,16 +163,16 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
       `Local MCP URL: http://${config.host}:${config.port}/mcp`,
       ...(publicBaseUrl ? [`Public MCP URL: ${publicBaseUrl}/mcp`] : []),
     ];
-    prompts.note(lines.join("\n"), "DevSpace configured");
+    prompts.note(lines.join("\n"), "GPTMCP configured");
     prompts.note(
       [
         `Owner password: ${auth.ownerToken}`,
-        "Use this when ChatGPT or Claude asks you to approve DevSpace access.",
+        "Use this when ChatGPT asks you to approve GPTMCP access.",
         `Stored at: ${authPath}`,
       ].join("\n"),
       "Owner password",
     );
-    prompts.outro("Run `devspace serve` to start the MCP server.");
+    prompts.outro("Run `gptmcp serve` to start the MCP server.");
   } catch (error) {
     if (error instanceof SetupCancelledError) {
       prompts.cancel("Setup cancelled");
@@ -200,12 +200,12 @@ async function serve(): Promise<void> {
   const config = loadConfig();
   const { app, close } = createServer(config);
   const httpServer = app.listen(config.port, config.host, () => {
-    console.log(`devspace listening on http://${config.host}:${config.port}/mcp`);
+    console.log(`gptmcp listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
     console.log(`allowed roots: ${config.allowedRoots.join(", ")}`);
     console.log(`allowed hosts: ${config.allowedHosts.join(", ")}`);
     if (config.allowedHosts.includes("*")) {
-      console.warn("warning: Host header allowlist is disabled because DEVSPACE_ALLOWED_HOSTS=*");
+      console.warn("warning: Host header allowlist is disabled because GPTMCP_ALLOWED_HOSTS=*");
     }
     console.log("auth: Owner password approval required");
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
@@ -220,7 +220,7 @@ async function serve(): Promise<void> {
   };
   const handleShutdown = () => {
     void shutdown().catch((error) => {
-      console.error("devspace shutdown failed", error);
+      console.error("gptmcp shutdown failed", error);
       process.exit(1);
     });
   };
@@ -231,7 +231,7 @@ async function serve(): Promise<void> {
 async function runStatus(): Promise<void> {
   const config = loadConfig();
   const runtime = await fetchRuntimeStatus(config);
-  console.log(`DevSpace CLI: ${DEVSPACE_VERSION}`);
+  console.log(`GPTMCP CLI: ${GPTMCP_VERSION}`);
   console.log(`Local MCP URL: ${localServerUrl(config.host, config.port, "/mcp")}`);
 
   if (!runtime) {
@@ -250,20 +250,20 @@ async function runRestart(): Promise<void> {
   const runtime = await fetchRuntimeStatus(config);
   if (!runtime) {
     throw new Error(
-      `No running DevSpace server found at ${localServerUrl(config.host, config.port, "/mcp")}. Run \`devspace serve\` first.`,
+      `No running GPTMCP server found at ${localServerUrl(config.host, config.port, "/mcp")}. Run \`gptmcp serve\` first.`,
     );
   }
   if (!runtime.execPath || runtime.argv.length === 0) {
-    throw new Error("The running DevSpace server did not report a restartable process command.");
+    throw new Error("The running GPTMCP server did not report a restartable process command.");
   }
 
-  console.log(`Stopping DevSpace ${runtime.version} (PID ${runtime.pid})...`);
+  console.log(`Stopping GPTMCP ${runtime.version} (PID ${runtime.pid})...`);
   stopRuntimeProcess(runtime.pid);
   await waitForRuntimeState(config, false, 8_000);
 
   const replacementEnv = restartEnvironment(runtime);
-  replacementEnv.DEVSPACE_ALLOWED_ROOTS = config.allowedRoots.join(",");
-  replacementEnv.DEVSPACE_WIDGETS = config.widgets;
+  replacementEnv.GPTMCP_ALLOWED_ROOTS = config.allowedRoots.join(",");
+  replacementEnv.GPTMCP_WIDGETS = config.widgets;
 
   const child = spawn(runtime.execPath, [...runtime.execArgv, ...runtime.argv], {
     cwd: runtime.cwd,
@@ -272,15 +272,15 @@ async function runRestart(): Promise<void> {
     stdio: "ignore",
     windowsHide: true,
   });
-  if (!child.pid) throw new Error("Failed to start the replacement DevSpace process.");
+  if (!child.pid) throw new Error("Failed to start the replacement GPTMCP process.");
   child.unref();
 
   const restarted = await waitForRuntimeState(config, true, 12_000);
   if (!restarted) {
-    throw new Error("DevSpace stopped, but the replacement server did not become healthy within 12 seconds.");
+    throw new Error("GPTMCP stopped, but the replacement server did not become healthy within 12 seconds.");
   }
 
-  console.log(`DevSpace restarted as PID ${restarted.pid}.`);
+  console.log(`GPTMCP restarted as PID ${restarted.pid}.`);
   console.log(`Version: ${restarted.version}`);
   console.log(`Entry: ${restarted.entry}`);
   console.log(`Allowed roots: ${restarted.allowedRoots.join(", ")}`);
@@ -288,7 +288,7 @@ async function runRestart(): Promise<void> {
 
 async function runDoctor(): Promise<void> {
   const files = loadDevspaceFiles();
-  console.log(`DevSpace CLI: ${DEVSPACE_VERSION}`);
+  console.log(`GPTMCP CLI: ${GPTMCP_VERSION}`);
   console.log(`CLI entry: ${process.argv[1] ?? "unknown"}`);
   console.log(`Config dir: ${files.dir}`);
   console.log(`Config file: ${files.configExists ? files.configPath : "missing"}`);
@@ -314,8 +314,8 @@ async function runDoctor(): Promise<void> {
       console.log(`Server version: ${runtime.version}`);
       console.log(`Server entry: ${runtime.entry}`);
       console.log(`Server cwd: ${runtime.cwd}`);
-      if (runtime.version !== DEVSPACE_VERSION) {
-        console.log(`Version mismatch: CLI ${DEVSPACE_VERSION}, server ${runtime.version}`);
+      if (runtime.version !== GPTMCP_VERSION) {
+        console.log(`Version mismatch: CLI ${GPTMCP_VERSION}, server ${runtime.version}`);
       }
     } else {
       console.log("Server: not reachable");
@@ -325,7 +325,7 @@ async function runDoctor(): Promise<void> {
   }
 }
 
-function printRuntimeStatus(runtime: DevSpaceRuntimeStatus): void {
+function printRuntimeStatus(runtime: GPTMCPRuntimeStatus): void {
   console.log(`Server: running (PID ${runtime.pid})`);
   console.log(`Server version: ${runtime.version}`);
   console.log(`Node: ${runtime.nodeVersion}`);
@@ -339,26 +339,26 @@ function printRuntimeStatus(runtime: DevSpaceRuntimeStatus): void {
   console.log(`Artifacts: ${runtime.artifactsEnabled ? "enabled" : "disabled"}`);
   console.log(`State dir: ${runtime.stateDir}`);
   console.log(`Worktree dir: ${runtime.worktreeRoot}`);
-  if (runtime.version !== DEVSPACE_VERSION) {
-    console.log(`Version mismatch: CLI ${DEVSPACE_VERSION}, server ${runtime.version}`);
+  if (runtime.version !== GPTMCP_VERSION) {
+    console.log(`Version mismatch: CLI ${GPTMCP_VERSION}, server ${runtime.version}`);
   }
 }
 
-async function fetchRuntimeStatus(config: ServerConfig): Promise<DevSpaceRuntimeStatus | undefined> {
+async function fetchRuntimeStatus(config: ServerConfig): Promise<GPTMCPRuntimeStatus | undefined> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
     const response = await fetch(localServerUrl(config.host, config.port, "/statusz"), {
-      headers: { "x-devspace-owner-token": config.oauth.ownerToken },
+      headers: { "x-gptmcp-owner-token": config.oauth.ownerToken },
       signal: controller.signal,
     });
     if (response.status === 404) return undefined;
     if (!response.ok) {
-      throw new Error(`DevSpace status endpoint returned HTTP ${response.status}.`);
+      throw new Error(`GPTMCP status endpoint returned HTTP ${response.status}.`);
     }
     const value = await response.json();
     if (!isRuntimeStatus(value)) {
-      throw new Error("DevSpace status endpoint returned an invalid payload.");
+      throw new Error("GPTMCP status endpoint returned an invalid payload.");
     }
     return value;
   } catch (error) {
@@ -371,11 +371,11 @@ async function fetchRuntimeStatus(config: ServerConfig): Promise<DevSpaceRuntime
   }
 }
 
-function isRuntimeStatus(value: unknown): value is DevSpaceRuntimeStatus {
+function isRuntimeStatus(value: unknown): value is GPTMCPRuntimeStatus {
   if (!value || typeof value !== "object") return false;
-  const status = value as Partial<DevSpaceRuntimeStatus>;
+  const status = value as Partial<GPTMCPRuntimeStatus>;
   return status.ok === true
-    && status.name === "devspace"
+    && status.name === "gptmcp"
     && typeof status.version === "string"
     && typeof status.pid === "number"
     && typeof status.cwd === "string"
@@ -396,7 +396,7 @@ function stopRuntimeProcess(pid: number): void {
       windowsHide: true,
     });
     if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`Unable to stop DevSpace process ${pid}.`);
+    if (result.status !== 0) throw new Error(`Unable to stop GPTMCP process ${pid}.`);
     return;
   }
 
@@ -411,7 +411,7 @@ async function waitForRuntimeState(
   config: ServerConfig,
   running: boolean,
   timeoutMs: number,
-): Promise<DevSpaceRuntimeStatus | undefined> {
+): Promise<GPTMCPRuntimeStatus | undefined> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const runtime = await fetchRuntimeStatus(config);
@@ -421,7 +421,7 @@ async function waitForRuntimeState(
   }
 
   if (running) return undefined;
-  throw new Error("DevSpace did not stop within the expected timeout.");
+  throw new Error("GPTMCP did not stop within the expected timeout.");
 }
 
 function runConfigCommand(args: string[]): void {
@@ -465,173 +465,32 @@ function runConfigCommand(args: string[]): void {
 function printHelp(): void {
   console.log(
     [
-      "DevSpace",
+      "GPTMCP",
       "",
       "Usage:",
-      "  devspace                 Run first-time setup if needed, then start the server",
-      "  devspace serve           Start the server",
-      "  devspace init            Create or update ~/.devspace/config.json and auth.json",
-      "  devspace status          Show the running server and effective configuration",
-      "  devspace restart         Restart the running server with the same runtime configuration",
-      "  devspace doctor          Show config, runtime, dependency, and server diagnostics",
-      "  devspace config get      Print persisted config",
-      "  devspace config set publicBaseUrl <url|null>",
-      "  devspace config set allowedRoots <root1,root2,...>",
-      "  devspace -v, --version   Print the installed version",
+      "  gptmcp                    Run first-time setup if needed, then start the server",
+      "  gptmcp serve              Start the server",
+      "  gptmcp init               Create or update ~/.gptmcp/config.json and auth.json",
+      "  gptmcp status             Show the running server and effective configuration",
+      "  gptmcp restart            Restart the running server with the same runtime configuration",
+      "  gptmcp doctor             Show config, runtime, dependency, and server diagnostics",
+      "  gptmcp config get        Print persisted config",
+      "  gptmcp config set publicBaseUrl <url|null>",
+      "  gptmcp config set allowedRoots <root1,root2,...>",
+      "  gptmcp -v, --version     Print the installed version",
       "",
       "For temporary tunnels:",
-      "  DEVSPACE_PUBLIC_BASE_URL=https://example.trycloudflare.com devspace serve",
+      "  GPTMCP_PUBLIC_BASE_URL=https://example.trycloudflare.com gptmcp serve",
     ].join("\n"),
   );
 }
 
-/* Removed local-subagent CLI implementation.
-async function runAgentsCommand(args: string[]): Promise<void> {
-  const [subcommand, ...rest] = args;
-  switch (subcommand) {
-    case "ls":
-    case "list":
-      await runAgentsList();
-      return;
-    case "run":
-      await runAgentsRun(rest);
-      return;
-    case "show":
-      await runAgentsShow(rest);
-      return;
-    case "__worker":
-      await runAgentsWorker(rest);
-      return;
-    case undefined:
-    case "help":
-    case "--help":
-    case "-h":
-      printAgentsHelp();
-      return;
-    default:
-      throw new Error(`Unknown agents command: ${subcommand}`);
-  }
-}
-
-async function runAgentsList(): Promise<void> {
-  const config = loadConfig();
-  const store = createLocalAgentStore(config);
-  const agents = store.list(resolveCurrentWorkspaceScope());
-
-  if (agents.length === 0) {
-    console.log("No subagent sessions found for this workspace.");
-    return;
-  }
-
-  for (const agent of agents) {
-    console.log(formatAgentLine(agent));
-  }
-}
-
-async function runAgentsRun(args: string[]): Promise<void> {
-  const parsed = parseLocalAgentRunArgs(args);
-  const config = loadConfig();
-  const workspaceRoot = resolveCurrentWorkspaceRoot();
-  const store = createLocalAgentStore(config);
-  try {
-    const record = await startLocalAgentSession(config, store, {
-      workspaceId: process.env.DEVSPACE_WORKSPACE_ID,
-      workspaceRoot,
-      target: parsed.target,
-      prompt: parsed.prompt,
-      model: parsed.model,
-      thinking: parsed.thinking,
-    });
-    console.log(formatAgentLine(record));
-  } finally {
-    store.close();
-  }
-}
-
-async function runAgentsShow(args: string[]): Promise<void> {
-  const [id] = args;
-  if (!id) throw new Error("Usage: devspace agents show <id>");
-
-  const config = loadConfig();
-  const store = createLocalAgentStore(config);
-  let record = store.get(id);
-  if (!record) throw new Error(`Unknown subagent id: ${id}`);
-
-  const deadline = Date.now() + 15_000;
-  while ((record.status === "starting" || record.status === "running") && Date.now() < deadline) {
-    await sleep(500);
-    record = store.get(id) ?? record;
-  }
-
-  console.log(formatAgentLine(record));
-  if (record.latestResponse) {
-    console.log(record.latestResponse);
-    return;
-  }
-  if (record.error) {
-    console.log(record.error);
-    return;
-  }
-  if (record.status === "starting" || record.status === "running") {
-    console.log(`No final response yet. Call \`devspace agents show ${record.id}\` again later.`);
-  }
-}
-
-async function runAgentsWorker(args: string[]): Promise<void> {
-  const [id, promptFileFlag, promptFile] = args;
-  if (!id || promptFileFlag !== "--prompt-file" || !promptFile) {
-    throw new Error("Usage: devspace agents __worker <id> --prompt-file <path>");
-  }
-
-  const config = loadConfig();
-  const store = createLocalAgentStore(config);
-  try {
-    await executeLocalAgentWorker(store, id, promptFile);
-  } finally {
-    store.close();
-  }
-}
-
-function resolveCurrentWorkspaceRoot(): string {
-  return resolve(process.env.DEVSPACE_WORKSPACE_ROOT || process.cwd());
-}
-
-function resolveCurrentWorkspaceScope(): { workspaceId?: string; workspaceRoot: string } {
-  return {
-    workspaceId: process.env.DEVSPACE_WORKSPACE_ID,
-    workspaceRoot: resolveCurrentWorkspaceRoot(),
-  };
-}
-
-function formatAgentLine(agent: Pick<
-  LocalAgentRecord,
-  "id" | "status" | "profileName" | "provider" | "model" | "thinking"
->): string {
-  const model = agent.model ? ` ${agent.model}` : "";
-  const thinking = agent.thinking ? ` thinking=${agent.thinking}` : "";
-  return `${agent.id} ${agent.status} ${agent.profileName} ${agent.provider}${model}${thinking}`;
-}
-
-*/
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-function printAgentsHelp(): void {
-  console.log(
-    [
-      "DevSpace agents",
-      "",
-      "Usage:",
-      "  devspace agents ls",
-      "  devspace agents run <profile-or-provider-or-id> [--model <model>] [--thinking <level>] <prompt>",
-      "  devspace agents show <id>",
-    ].join("\n"),
-  );
-}
-
 function printVersion(): void {
-  console.log(DEVSPACE_VERSION);
+  console.log(GPTMCP_VERSION);
 }
 
 function normalizeOptionalPublicBaseUrl(value: string): string | null {
@@ -691,11 +550,11 @@ function validatePublicBaseUrl(value: string): string | undefined {
 }
 
 function assertSupportedNode(): void {
-  if (satisfies(process.versions.node, DEVSPACE_NODE_RANGE)) return;
+  if (satisfies(process.versions.node, GPTMCP_NODE_RANGE)) return;
 
   throw new Error(
     [
-      `DevSpace requires Node ${DEVSPACE_NODE_RANGE}.`,
+      `GPTMCP requires Node ${GPTMCP_NODE_RANGE}.`,
       `Current Node: ${process.version}`,
       "",
       "Install Node 22 LTS or use a version manager such as nvm, fnm, or mise.",
@@ -704,9 +563,9 @@ function assertSupportedNode(): void {
 }
 
 function nodeVersionStatus(): string {
-  return satisfies(process.versions.node, DEVSPACE_NODE_RANGE)
-    ? `supported ${DEVSPACE_NODE_RANGE}`
-    : `unsupported, requires ${DEVSPACE_NODE_RANGE}`;
+  return satisfies(process.versions.node, GPTMCP_NODE_RANGE)
+    ? `supported ${GPTMCP_NODE_RANGE}`
+    : `unsupported, requires ${GPTMCP_NODE_RANGE}`;
 }
 
 class SetupCancelledError extends Error {}

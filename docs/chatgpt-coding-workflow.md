@@ -1,6 +1,6 @@
 # ChatGPT Coding Workflow
 
-DevSpace brings a Codex-style coding-agent loop to ChatGPT and other MCP hosts:
+GPTMCP brings a Codex-style coding-agent loop to ChatGPT and other MCP hosts:
 inspect the repo, follow local instructions, make scoped edits, run
 verification, and show the user what changed.
 
@@ -16,7 +16,7 @@ ChatGPT should call `open_workspace` once for a project folder:
 
 The result includes a `workspaceId`, but ChatGPT conversations are also bound to
 the opened workspace server-side. On hosts that provide conversation metadata,
-subsequent DevSpace tools should normally omit `workspaceId`; DevSpace resolves
+subsequent GPTMCP tools should normally omit `workspaceId`; GPTMCP resolves
 the current workspace from that conversation binding. Passing the explicit ID
 remains supported for compatibility and disambiguation.
 
@@ -46,7 +46,7 @@ Do not call `open_workspace` again for the same checkout folder unless:
 
 ## Checkout Mode
 
-Checkout mode is the default. DevSpace opens the actual directory:
+Checkout mode is the default. GPTMCP opens the actual directory:
 
 ```json
 {
@@ -70,7 +70,7 @@ Use worktree mode for isolated parallel work:
 Managed worktrees are created under:
 
 ```text
-~/.devspace/worktrees
+~/.gptmcp/worktrees
 ```
 
 Worktree mode requires a Git repository with at least one commit. It starts from
@@ -82,12 +82,12 @@ available for explicit-host compatibility. Call `open_workspace` in worktree
 mode again only when another isolated worktree is actually required.
 
 Uncommitted source checkout changes are not copied into the managed worktree.
-DevSpace reports when the source checkout was dirty so the model can decide how
+GPTMCP reports when the source checkout was dirty so the model can decide how
 to proceed with the user.
 
 ## Project Instructions
 
-When a workspace opens, DevSpace loads root-level instruction files:
+When a workspace opens, GPTMCP loads root-level instruction files:
 
 - `AGENTS.md`
 - `AGENTS.MD`
@@ -104,29 +104,29 @@ new context during later tool calls.
 
 Skills are enabled by default for coding-agent workflows.
 
-DevSpace discovers standard Agent Skills from:
+GPTMCP discovers standard Agent Skills from:
 
 - `~/.agents/skills`
 - project `.agents/skills`
-- `~/.devspace/skills`
+- `~/.gptmcp/skills`
 
 It also keeps compatibility with:
 
-- `DEVSPACE_AGENT_DIR/skills`, defaulting to `~/.codex/skills`
-- additional paths from `DEVSPACE_SKILL_PATHS`
+- `GPTMCP_AGENT_DIR/skills`, defaulting to `~/.codex/skills`
+- additional paths from `GPTMCP_SKILL_PATHS`
 
-Legacy project paths such as `.pi/skills` can be added through `DEVSPACE_SKILL_PATHS` when needed.
+Legacy project paths such as `.pi/skills` can be added through `GPTMCP_SKILL_PATHS` when needed.
 
 `open_workspace` no longer injects the full skill catalog into every coding
 conversation. When skill guidance may be relevant, call `skills_list`, then load
 only the matching skill with `skill_read`. After a skill is activated, files
 inside that skill directory may be read as needed.
 
-Set `DEVSPACE_SKILLS=0` to hide skills from workspace output.
+Set `GPTMCP_SKILLS=0` to hide skills from workspace output.
 
 ## Tool Names
 
-By default DevSpace runs in `DEVSPACE_TOOL_MODE=full` and exposes:
+By default GPTMCP runs in `GPTMCP_TOOL_MODE=full` and exposes:
 
 - `open_workspace`
 - `read` (one or several files)
@@ -153,11 +153,11 @@ session state without consuming output, and `kill_process` to terminate it.
 Recently completed process sessions remain queryable for a short retention
 window (five minutes by default).
 
-Use `DEVSPACE_TOOL_MODE=minimal` when a deliberately smaller surface is needed;
+Use `GPTMCP_TOOL_MODE=minimal` when a deliberately smaller surface is needed;
 it hides dedicated search and managed-process tools.
 
 The experimental Codex-style surface is enabled with
-`DEVSPACE_TOOL_MODE=codex`. It exposes:
+`GPTMCP_TOOL_MODE=codex`. It exposes:
 
 - `open_workspace`
 - `read` (one or several files)
@@ -182,19 +182,19 @@ true` only for commands that need a terminal.
 
 ## Console UI metadata
 
-DevSpace no longer attaches MCP App widgets to tool definitions. ChatGPT and
+GPTMCP no longer attaches MCP App widgets to tool definitions. ChatGPT and
 other MCP hosts receive normal tool content and structured results only; no
 `ui.resourceUri` metadata or per-tool iframe resources are exposed.
 
 Tool presentation metadata is emitted separately through the Console event
 pipeline. Each stored/SSE tool event may include a `consoleUi` envelope with a
 resource identifier such as `tool/read` or `tool/edit` plus the card metadata
-needed by DevSpace Console (summary, payload, files, diff/patch information,
+needed by GPTMCP Console (summary, payload, files, diff/patch information,
 and similar presentation data).
 
 This keeps the coding host lightweight while allowing the Tauri Console to
 render rich tool details from SQLite history and the live SSE stream. The
-legacy `DEVSPACE_WIDGETS=full` and `DEVSPACE_WIDGETS=changes` values are accepted
+legacy `GPTMCP_WIDGETS=full` and `GPTMCP_WIDGETS=changes` values are accepted
 for configuration compatibility, but normalize to `off` and do not re-enable
 MCP App widgets.
 

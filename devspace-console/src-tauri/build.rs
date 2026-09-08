@@ -11,7 +11,7 @@ const WINDOWS_ICON: &[u8] = &[
 
 fn main() {
     let icon_path = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is required"))
-        .join("devspace-console.ico");
+        .join("gptmcp-console.ico");
     fs::write(&icon_path, WINDOWS_ICON).expect("failed to write temporary Windows icon");
 
     let windows = tauri_build::WindowsAttributes::new().window_icon_path(&icon_path);

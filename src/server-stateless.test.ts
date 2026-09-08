@@ -40,14 +40,14 @@ test("MCP HTTP serving is stateless per request and returns JSON without session
       params: {
         protocolVersion: "2025-11-25",
         capabilities: {},
-        clientInfo: { name: "devspace-stateless-test", version: "1.0.0" },
+        clientInfo: { name: "gptmcp-stateless-test", version: "1.0.0" },
       },
     });
     assert.equal(initialized.status, 200);
     assert.match(initialized.headers.get("content-type") ?? "", /application\/json/i);
     assert.equal(initialized.headers.get("mcp-session-id"), null);
     const initializePayload = await initialized.json() as { result?: { serverInfo?: { name?: unknown } } };
-    assert.equal(initializePayload.result?.serverInfo?.name, "devspace");
+    assert.equal(initializePayload.result?.serverInfo?.name, "gptmcp");
 
     const tools = await postMcp(
       endpoint,
@@ -58,7 +58,7 @@ test("MCP HTTP serving is stateless per request and returns JSON without session
     assert.equal(tools.status, 200);
     assert.match(tools.headers.get("content-type") ?? "", /application\/json/i);
     assert.equal(tools.headers.get("mcp-session-id"), null);
-    assert.equal(tools.headers.get("x-devspace-cache"), null);
+    assert.equal(tools.headers.get("x-gptmcp-cache"), null);
     const toolsPayload = await tools.json() as { id?: unknown; result?: { tools?: Array<{ name?: unknown }> } };
     assert.equal(toolsPayload.id, 2);
     assert.equal(toolsPayload.result?.tools?.some((tool) => tool.name === "open_workspace"), true);
@@ -70,7 +70,7 @@ test("MCP HTTP serving is stateless per request and returns JSON without session
       params: {},
     });
     assert.equal(cachedTools.status, 200);
-    assert.equal(cachedTools.headers.get("x-devspace-cache"), "hit");
+    assert.equal(cachedTools.headers.get("x-gptmcp-cache"), "hit");
     const cachedPayload = await cachedTools.json() as {
       id?: unknown;
       result?: { tools?: Array<{ name?: unknown }> };
@@ -85,10 +85,10 @@ test("MCP HTTP serving is stateless per request and returns JSON without session
       params: {},
     });
     assert.equal(denied.status, 401);
-    assert.equal(denied.headers.get("x-devspace-cache"), null);
+    assert.equal(denied.headers.get("x-gptmcp-cache"), null);
 
     const optimizer = await fetch(endpoint.replace(/\/mcp$/, "/statusz/optimizer"), {
-      headers: { "x-devspace-owner-token": OWNER_TOKEN },
+      headers: { "x-gptmcp-owner-token": OWNER_TOKEN },
     });
     assert.equal(optimizer.status, 200);
     const optimizerPayload = await optimizer.json() as {
@@ -131,7 +131,7 @@ async function issueAccessToken(
       params: {
         redirectUri: REDIRECT_URI,
         codeChallenge: "challenge",
-        scopes: ["devspace"],
+        scopes: ["gptmcp"],
         resource: mcpUrl,
       },
       expiresAtMs: Date.now() + 60_000,

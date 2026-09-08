@@ -1,14 +1,14 @@
 {
-  "name": "@waishnav/devspace",
+  "name": "gptmcp",
   "version": "1.0.6",
-  "description": "Expose a secure local coding workspace through an MCP server.",
+  "description": "Expose secure local coding workspaces to ChatGPT through MCP.",
   "type": "module",
   "main": "dist/server.js",
   "engines": {
     "node": ">=22.19 <27"
   },
   "bin": {
-    "devspace": "dist/cli.js"
+    "gptmcp": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -28,7 +28,7 @@
     "postinstall": "node scripts/fix-node-pty-permissions.mjs",
     "start": "node dist/cli.js serve",
     "console:start": "node dist/console-server/cli.js",
-    "test": "tsx src/console-events.test.ts && tsx src/request-meta.test.ts && tsx src/incoming-artifacts.test.ts && tsx src/artifact-download.test.ts && tsx src/move-file.test.ts && tsx src/process-platform.test.ts && tsx src/process-sessions.test.ts && tsx src/mcp-request-optimizer.test.ts && tsx src/mcp-sessions.test.ts && tsx src/server-shutdown.test.ts && tsx src/roots.test.ts && tsx src/server-stateless.test.ts && tsx src/server-status.test.ts && tsx src/oauth-store.test.ts",
+    "test": "tsx src/gptmcp-migration.test.ts && tsx src/console-events.test.ts && tsx src/request-meta.test.ts && tsx src/incoming-artifacts.test.ts && tsx src/artifact-download.test.ts && tsx src/move-file.test.ts && tsx src/process-platform.test.ts && tsx src/process-sessions.test.ts && tsx src/mcp-request-optimizer.test.ts && tsx src/mcp-sessions.test.ts && tsx src/server-shutdown.test.ts && tsx src/roots.test.ts && tsx src/server-stateless.test.ts && tsx src/server-status.test.ts && tsx src/oauth-store.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "keywords": [],

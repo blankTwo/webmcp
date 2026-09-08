@@ -1,6 +1,6 @@
 # Security Model
 
-DevSpace exposes local coding capabilities over MCP. Treat it as remote access
+GPTMCP exposes local coding capabilities over MCP. Treat it as remote access
 to your development machine.
 
 The security model is simple:
@@ -12,7 +12,7 @@ The security model is simple:
 
 ## Filesystem Allowlist
 
-DevSpace only opens workspaces under configured roots.
+GPTMCP only opens workspaces under configured roots.
 
 Good examples:
 
@@ -34,24 +34,24 @@ reach.
 
 ## Owner Password
 
-`devspace init` generates an Owner password and stores it in:
+`gptmcp init` generates an Owner password and stores it in:
 
 ```text
-~/.devspace/auth.json
+~/.gptmcp/auth.json
 ```
 
-When an MCP client connects, DevSpace shows an approval page. Enter the Owner
+When an MCP client connects, GPTMCP shows an approval page. Enter the Owner
 password only when you intentionally want that client to access this server.
 
 For env-driven deployments, set a long random value:
 
 ```bash
-DEVSPACE_OAUTH_OWNER_TOKEN="$(openssl rand -base64 32)"
+GPTMCP_OAUTH_OWNER_TOKEN="$(openssl rand -base64 32)"
 ```
 
 ## Public URL And Host Allowlist
 
-DevSpace needs `DEVSPACE_PUBLIC_BASE_URL` so MCP clients can discover OAuth
+GPTMCP needs `GPTMCP_PUBLIC_BASE_URL` so MCP clients can discover OAuth
 metadata and connect to the correct resource.
 
 The value should be the origin only:
@@ -60,21 +60,21 @@ The value should be the origin only:
 https://your-tunnel-host.example.com
 ```
 
-Do not include `/mcp` in `DEVSPACE_PUBLIC_BASE_URL`.
+Do not include `/mcp` in `GPTMCP_PUBLIC_BASE_URL`.
 
-By default, DevSpace derives allowed Host headers from the local host and public
-URL. Use `DEVSPACE_ALLOWED_HOSTS=*` only for intentional local debugging.
+By default, GPTMCP derives allowed Host headers from the local host and public
+URL. Use `GPTMCP_ALLOWED_HOSTS=*` only for intentional local debugging.
 
 ## Tunnels
 
-DevSpace does not manage tunnels. Your tunnel or reverse proxy should point to:
+GPTMCP does not manage tunnels. Your tunnel or reverse proxy should point to:
 
 ```text
 http://127.0.0.1:7676
 ```
 
 Prefer adding Cloudflare Access, Tailscale identity controls, or equivalent
-protection in front of public tunnels. DevSpace OAuth still protects the MCP
+protection in front of public tunnels. GPTMCP OAuth still protects the MCP
 endpoint, but the tunnel URL should not be treated as a secret.
 
 ## Shell Access
@@ -82,7 +82,7 @@ endpoint, but the tunnel URL should not be treated as a secret.
 The shell tool is powerful by design. It is meant for tests, builds, git, and
 package scripts.
 
-Filesystem path containment applies to DevSpace file tools. Shell commands run
+Filesystem path containment applies to GPTMCP file tools. Shell commands run
 as local commands and can do what your user account can do. This is why the MCP
 client must be trusted and the Owner password must stay private.
 
@@ -100,13 +100,13 @@ workspace. `download_artifact` accepts the MCP host's native file value, the
 path. It returns only the workspace-relative path and does not create a
 persistent artifact service or reusable artifact ID.
 
-DevSpace accepts only the documented native-file object and trusted OpenAI
+GPTMCP accepts only the documented native-file object and trusted OpenAI
 download hosts and redirects. Arbitrary URL strings, local source paths,
 credentials, malformed references, and unknown object fields are rejected.
 
 Absolute paths, traversal, symlinked parents, and existing destinations also
 fail closed. Downloads stream under the configured per-file limit and are
-published without overwrite as owner-only files. DevSpace does not extract or
+published without overwrite as owner-only files. GPTMCP does not extract or
 execute transferred content.
 
 ## Runtime Status Endpoints
@@ -115,16 +115,16 @@ execute transferred content.
 returns only basic server identity, version, Node version, and uptime and does
 not expose local paths, process IDs, allowed roots, or configuration directories.
 
-`GET /statusz` exposes local operational details used by `devspace status` and
-`devspace restart`, including the running process command and effective
+`GET /statusz` exposes local operational details used by `gptmcp status` and
+`gptmcp restart`, including the running process command and effective
 non-secret configuration. It requires the Owner password in the
-`x-devspace-owner-token` header and returns `Cache-Control: no-store`. The Owner
+`x-gptmcp-owner-token` header and returns `Cache-Control: no-store`. The Owner
 password itself is never returned by either endpoint or written to request logs.
 
 ## Logs
 
-By default, DevSpace logs requests and tool calls. Shell command previews are
-disabled unless `DEVSPACE_LOG_SHELL_COMMANDS=1`.
+By default, GPTMCP logs requests and tool calls. Shell command previews are
+disabled unless `GPTMCP_LOG_SHELL_COMMANDS=1`.
 
 Do not enable shell command logging if commands may contain secrets.
 

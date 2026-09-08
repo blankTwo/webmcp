@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 
-interface DevSpacePackageMetadata {
+interface GPTMCPPackageMetadata {
   version: string;
   engines?: {
     node?: string;
@@ -8,11 +8,11 @@ interface DevSpacePackageMetadata {
 }
 
 const require = createRequire(import.meta.url);
-const packageJson = require("../package.json") as Partial<DevSpacePackageMetadata>;
+const packageJson = require("../package.json") as Partial<GPTMCPPackageMetadata>;
 
 if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
-  throw new Error("Unable to read DevSpace package version.");
+  throw new Error("Unable to read GPTMCP package version.");
 }
 
-export const DEVSPACE_VERSION = packageJson.version;
-export const DEVSPACE_NODE_RANGE = packageJson.engines?.node ?? ">=22.19 <27";
+export const GPTMCP_VERSION = packageJson.version;
+export const GPTMCP_NODE_RANGE = packageJson.engines?.node ?? ">=22.19 <27";

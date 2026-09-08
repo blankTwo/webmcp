@@ -6,7 +6,7 @@ import { once } from "node:events";
 import test from "node:test";
 import { loadConfig } from "./config.js";
 import { createServer } from "./server.js";
-import { DEVSPACE_VERSION } from "./version.js";
+import { GPTMCP_VERSION } from "./version.js";
 
 const OWNER_TOKEN = "test-owner-token-that-is-long-enough";
 
@@ -33,8 +33,8 @@ test("healthz is public and statusz requires the owner token", async () => {
     assert.equal(healthResponse.status, 200);
     const health = await healthResponse.json() as Record<string, unknown>;
     assert.equal(health.ok, true);
-    assert.equal(health.name, "devspace");
-    assert.equal(health.version, DEVSPACE_VERSION);
+    assert.equal(health.name, "gptmcp");
+    assert.equal(health.version, GPTMCP_VERSION);
     assert.equal(typeof health.nodeVersion, "string");
     assert.equal(typeof health.uptimeSeconds, "number");
     assert.equal("allowedRoots" in health, false);
@@ -211,7 +211,7 @@ test("healthz is public and statusz requires the owner token", async () => {
     assert.equal(statusResponse.headers.get("cache-control"), "no-store");
     const status = await statusResponse.json() as Record<string, unknown>;
     assert.equal(status.ok, true);
-    assert.equal(status.version, DEVSPACE_VERSION);
+    assert.equal(status.version, GPTMCP_VERSION);
     assert.equal(status.pid, process.pid);
     assert.equal(status.cwd, process.cwd());
     assert.deepEqual(status.allowedRoots, config.allowedRoots);

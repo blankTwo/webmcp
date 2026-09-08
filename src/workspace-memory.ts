@@ -126,7 +126,7 @@ export function buildWorkspaceContinuation(
     ? `Git HEAD changed from ${shortSha(savedGitHead)} to ${shortSha(currentGitHead)} after this checkpoint.`
     : undefined;
   const lines: string[] = [
-    `Continuation from DevSpace checkpoint ${saved.checkpointId} (${saved.updatedAt}).`,
+    `Continuation from GPTMCP checkpoint ${saved.checkpointId} (${saved.updatedAt}).`,
     "This is persisted project state from a previous conversation. Current user instructions and current filesystem/Git state take precedence.",
   ];
 
