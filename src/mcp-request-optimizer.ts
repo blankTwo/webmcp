@@ -208,13 +208,79 @@ export interface SmartTruncateResult {
   extractedErrorCount: number;
 }
 
-const ERROR_LINE_PATTERN = /\b(?:error|failed|fatal|exception|panic|assertionerror|syntaxerror|typeerror|referenceerror|errno|npm ERR!|FAIL)\b/i;
+const ERROR_LINE_PATTERN = /\b(?:error|failed|fatal|exception|panic|assertionerror|syntaxerror|typeerror|referenceerror|errno|npm ERR!|FAIL|ERR_)\b/i;
+
+/**
+ * Strips ANSI color codes, VT100 control sequences, carriage-return progress overwrites,
+ * and collapses duplicate/blank noise lines to minimize Token footprint.
+ */
+export function cleanTerminalNoise(text: string): string {
+  if (!text) return "";
+
+  // 1. Strip ANSI escape codes
+  let cleaned = text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+
+  // 2. Handle \r carriage returns (progress bar rewrites)
+  if (cleaned.includes("\r")) {
+    cleaned = cleaned
+      .split("\n")
+      .map((line) => {
+        if (!line.includes("\r")) return line;
+        const parts = line.split("\r").map((p) => p.trim()).filter(Boolean);
+        return parts.length > 0 ? parts[parts.length - 1] : "";
+      })
+      .join("\n");
+  }
+
+  // 3. Trim trailing whitespace on lines
+  const lines = cleaned.split("\n").map((line) => line.trimEnd());
+
+  // 4. Deduplicate consecutive identical lines (e.g. repeating build warnings)
+  const deduped: string[] = [];
+  let repeatCount = 0;
+  let lastLine: string | null = null;
+
+  for (const line of lines) {
+    if (line === lastLine && line.trim().length > 0) {
+      repeatCount += 1;
+      if (repeatCount === 1) {
+        deduped.push(line);
+      }
+    } else {
+      if (repeatCount > 1) {
+        deduped.push(`  ↳ [Previous line repeated ${repeatCount} more times]`);
+      }
+      repeatCount = 0;
+      lastLine = line;
+      deduped.push(line);
+    }
+  }
+  if (repeatCount > 1) {
+    deduped.push(`  ↳ [Previous line repeated ${repeatCount} more times]`);
+  }
+
+  // 5. Collapse multiple blank lines into at most one blank line
+  const normalized: string[] = [];
+  let blankCount = 0;
+  for (const line of deduped) {
+    if (line.trim().length === 0) {
+      blankCount += 1;
+      if (blankCount <= 1) normalized.push("");
+    } else {
+      blankCount = 0;
+      normalized.push(line);
+    }
+  }
+
+  return normalized.join("\n").trim();
+}
 
 /**
  * Smartly bounds large command outputs or file search results by retaining:
- * 1. The invocation header lines (command setup/start)
- * 2. Critical error lines / stack traces discovered in the middle lines
- * 3. The completion summary / exit code tail lines
+ * 1. Cleaned terminal output (zero ANSI / progress noise)
+ * 2. The invocation header lines (command setup/start)
+ * 3. Critical error lines / stack traces discovered in the middle lines
+ * 4. The completion summary / exit code tail lines
  *
  * This dramatically preserves useful debugging context for ChatGPT while
  * protecting the context window and avoiding timeout bottlenecks.
@@ -223,18 +289,19 @@ export function smartTruncateOutput(
   text: string,
   options: SmartTruncateOptions = {},
 ): SmartTruncateResult {
+  const sanitized = cleanTerminalNoise(text);
   const maxChars = options.maxCharacters ?? 10_000;
-  const originalLength = text.length;
-  const lines = text.split("\n");
+  const originalLength = sanitized.length;
+  const lines = sanitized.split("\n");
   const originalLines = lines.length;
 
   if (originalLength <= maxChars && (!options.maxLines || originalLines <= options.maxLines)) {
     return {
-      text,
+      text: sanitized,
       truncated: false,
       originalLength,
       originalLines,
-      savedCharacters: 0,
+      savedCharacters: Math.max(0, text.length - sanitized.length),
       extractedErrorCount: 0,
     };
   }
@@ -248,13 +315,13 @@ export function smartTruncateOutput(
     const available = Math.max(0, maxChars - marker.length);
     const head = Math.ceil(available * 0.65);
     const tail = Math.floor(available * 0.35);
-    const resultText = `${text.slice(0, head)}${marker}${text.slice(text.length - tail)}`;
+    const resultText = `${sanitized.slice(0, head)}${marker}${sanitized.slice(sanitized.length - tail)}`;
     return {
       text: resultText,
       truncated: true,
       originalLength,
       originalLines,
-      savedCharacters: Math.max(0, originalLength - resultText.length),
+      savedCharacters: Math.max(0, text.length - resultText.length),
       extractedErrorCount: 0,
     };
   }
@@ -288,7 +355,7 @@ export function smartTruncateOutput(
     truncated: true,
     originalLength,
     originalLines,
-    savedCharacters: Math.max(0, originalLength - combined.length),
+    savedCharacters: Math.max(0, text.length - combined.length),
     extractedErrorCount: extractedErrors.length,
   };
 }
