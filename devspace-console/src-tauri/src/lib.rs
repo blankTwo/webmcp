@@ -128,29 +128,47 @@ fn save_console_settings(settings: &ConsoleSettings) -> Result<(), String> {
     Ok(())
 }
 
+fn is_valid_project_dir(path: &std::path::Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    if path.join("dist").join("cli.js").is_file() {
+        return true;
+    }
+    if path.join("package.json").is_file() && (path.join("src").join("server.ts").is_file() || path.join("src").is_dir()) {
+        return true;
+    }
+    false
+}
+
 fn get_system_drives() -> Vec<DriveCandidate> {
     let mut list = Vec::new();
     #[cfg(windows)]
     {
+        let candidates = [
+            "devspace-main",
+            "webmcp-main",
+            "webmcp",
+            "gptmcp-main",
+            "gptmcp",
+            "devspace",
+        ];
         for letter in b'C'..=b'Z' {
             let drive_str = format!("{}:\\", letter as char);
             let path = PathBuf::from(&drive_str);
             if path.exists() {
-                let default_project = path.join("devspace-main");
-                let alt_project = path.join("gptmcp");
-                let has_default = default_project.join("dist").join("cli.js").is_file();
-                let has_alt = alt_project.join("dist").join("cli.js").is_file();
-                let project_path = if has_default {
-                    Some(default_project.to_string_lossy().to_string())
-                } else if has_alt {
-                    Some(alt_project.to_string_lossy().to_string())
-                } else {
-                    None
-                };
+                let mut found_project: Option<String> = None;
+                for name in candidates {
+                    let project_candidate = path.join(name);
+                    if is_valid_project_dir(&project_candidate) {
+                        found_project = Some(project_candidate.to_string_lossy().to_string());
+                        break;
+                    }
+                }
                 list.push(DriveCandidate {
                     drive: drive_str,
-                    has_project: has_default || has_alt,
-                    project_path,
+                    has_project: found_project.is_some(),
+                    project_path: found_project,
                 });
             }
         }
@@ -163,7 +181,7 @@ fn resolve_project_root() -> Option<PathBuf> {
     let settings = load_console_settings();
     if let Some(custom) = settings.custom_project_root {
         let p = PathBuf::from(custom);
-        if p.join("dist").join("cli.js").is_file() || p.join("package.json").is_file() {
+        if is_valid_project_dir(&p) {
             return Some(p);
         }
     }
@@ -171,20 +189,20 @@ fn resolve_project_root() -> Option<PathBuf> {
     // 2. Explicit environment variable
     if let Some(path) = env::var_os("GPTMCP_PROJECT_DIR").or_else(|| env::var_os("DEVSPACE_PROJECT_DIR")) {
         let p = PathBuf::from(path);
-        if p.join("dist").join("cli.js").is_file() {
+        if is_valid_project_dir(&p) {
             return Some(p);
         }
     }
 
     // 3. Current working directory and its parents (devspace-console -> parent devspace-main)
     if let Ok(current) = env::current_dir() {
-        if current.join("dist").join("cli.js").is_file() {
+        if is_valid_project_dir(&current) {
             return Some(current);
         }
         let mut cur = current.clone();
         for _ in 0..4 {
             if let Some(parent) = cur.parent() {
-                if parent.join("dist").join("cli.js").is_file() {
+                if is_valid_project_dir(parent) {
                     return Some(parent.to_path_buf());
                 }
                 cur = parent.to_path_buf();
@@ -199,7 +217,7 @@ fn resolve_project_root() -> Option<PathBuf> {
         let mut cur = exe.clone();
         for _ in 0..4 {
             if let Some(parent) = cur.parent() {
-                if parent.join("dist").join("cli.js").is_file() {
+                if is_valid_project_dir(parent) {
                     return Some(parent.to_path_buf());
                 }
                 cur = parent.to_path_buf();
@@ -213,13 +231,61 @@ fn resolve_project_root() -> Option<PathBuf> {
     for candidate in get_system_drives() {
         if let Some(proj) = candidate.project_path {
             let p = PathBuf::from(proj);
-            if p.join("dist").join("cli.js").is_file() {
+            if is_valid_project_dir(&p) {
                 return Some(p);
             }
         }
     }
 
     None
+}
+
+fn ensure_default_config(project_root: &std::path::Path) -> Result<PathBuf, String> {
+    if let Ok(Some(existing)) = active_config_dir() {
+        return Ok(existing);
+    }
+
+    let home = env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "无法解析用户主目录".to_string())?;
+
+    let config_dir = home.join(".gptmcp");
+    let _ = fs::create_dir_all(&config_dir);
+
+    let config_file = config_dir.join("config.json");
+    if !config_file.is_file() {
+        let mut allowed_roots = vec![project_root.to_string_lossy().to_string()];
+        #[cfg(windows)]
+        {
+            for letter in b'C'..=b'Z' {
+                let drive_str = format!("{}:\\", letter as char);
+                if std::path::Path::new(&drive_str).exists() && !allowed_roots.contains(&drive_str) {
+                    allowed_roots.push(drive_str);
+                }
+            }
+        }
+        let default_config = serde_json::json!({
+            "host": "127.0.0.1",
+            "port": 7676,
+            "allowedRoots": allowed_roots,
+            "artifactsEnabled": true
+        });
+        let _ = fs::write(&config_file, serde_json::to_string_pretty(&default_config).unwrap_or_default());
+    }
+
+    let auth_file = config_dir.join("auth.json");
+    if !auth_file.is_file() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let token = format!("gptmcp-owner-{:x}", seed);
+        let default_auth = serde_json::json!({
+            "ownerToken": token
+        });
+        let _ = fs::write(&auth_file, serde_json::to_string_pretty(&default_auth).unwrap_or_default());
+    }
+
+    Ok(config_dir)
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
@@ -314,9 +380,48 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
     }
 
     let project_root = resolve_project_root()
-        .ok_or_else(|| "未找到 devspace-main 项目根目录 (dist/cli.js 不存在)".to_string())?;
+        .ok_or_else(|| "未找到项目根目录 (请确认代码目录包含 package.json 或在控制台指定路径)".to_string())?;
 
+    // 1. Ensure default configuration files (~/.gptmcp/config.json & auth.json) exist
+    let _ = ensure_default_config(&project_root);
+
+    // 2. Automatically build dist/cli.js if missing
     let cli_path = project_root.join("dist").join("cli.js");
+    if !cli_path.is_file() {
+        #[cfg(windows)]
+        let mut build_cmd = {
+            let mut cmd = std::process::Command::new("cmd");
+            cmd.args(["/C", "npm run build"]);
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            cmd
+        };
+        #[cfg(not(windows))]
+        let mut build_cmd = {
+            let mut cmd = std::process::Command::new("npm");
+            cmd.args(["run", "build"]);
+            cmd
+        };
+        build_cmd.current_dir(&project_root);
+
+        match build_cmd.status() {
+            Ok(status) if status.success() => {
+                // Build succeeded
+            }
+            Ok(status) => {
+                return Err(format!(
+                    "自动构建源码未成功退出 (npm run build 退出码: {:?})，请确保在根目录已执行 npm install",
+                    status.code()
+                ));
+            }
+            Err(err) => {
+                return Err(format!("自动构建项目失败 (npm run build): {err}"));
+            }
+        }
+
+        if !cli_path.is_file() {
+            return Err("自动构建已执行，但未在 dist/ 目录下找到 cli.js".to_string());
+        }
+    }
 
     let mut cmd = std::process::Command::new("node");
     cmd.arg(cli_path).arg("serve");
@@ -332,8 +437,8 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
         *guard = Some(child);
     }
 
-    // Poll for up to 6 seconds for health check
-    for _ in 0..12 {
+    // Poll for up to 8 seconds for health check
+    for _ in 0..16 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         if check_health().await {
             return Ok(ServiceControlResult {
