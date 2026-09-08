@@ -20,10 +20,10 @@ export function databasePath(stateDir: string): string {
 
 export function openDatabase(stateDir: string): DatabaseHandle {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  chmodSync(stateDir, 0o700);
+  try { chmodSync(stateDir, 0o700); } catch { /* Windows ACLs ignore chmod */ }
   const path = databasePath(stateDir);
   const sqlite = new Database(path);
-  chmodSync(path, 0o600);
+  try { chmodSync(path, 0o600); } catch { /* Windows ACLs ignore chmod */ }
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("synchronous = NORMAL");
   sqlite.pragma("busy_timeout = 5000");
