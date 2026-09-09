@@ -39,7 +39,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useCodingConsoleData } from "./coding-console-data";
 import { consoleApi, withQuery } from "./console-api";
 import { ProcessManager } from "./ProcessManager";
@@ -494,6 +494,9 @@ function App() {
   // Service management states
   const [serviceActionBusy, setServiceActionBusy] = useState(false);
   const [serviceFeedback, setServiceFeedback] = useState<string | null>(null);
+  const [serviceLogs, setServiceLogs] = useState<string[]>([]);
+  const [showServiceLogs, setShowServiceLogs] = useState(false);
+  const serviceLogsEndRef = useRef<HTMLPreElement | null>(null);
 
   // Cloudflare Tunnel & Custom Public Domain management states
   const [tunnelInfo, setTunnelInfo] = useState<CloudflaredTunnelInfo | null>(null);
@@ -542,6 +545,40 @@ function App() {
     if (!workspace) return;
     void loadWorkspaceHistory(workspace.path).catch(() => undefined);
   }, [loadWorkspaceHistory, workspace?.id, workspace?.path]);
+
+  const updateServiceLogs = useCallback(async () => {
+    try {
+      const logs = await invoke<string[]>("get_gptmcp_service_logs");
+      setServiceLogs(logs);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleClearServiceLogs = async () => {
+    try {
+      await invoke("clear_gptmcp_service_logs");
+      setServiceLogs([]);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    if (showServiceLogs || serviceActionBusy) {
+      void updateServiceLogs();
+      const interval = setInterval(() => {
+        void updateServiceLogs();
+      }, 800);
+      return () => clearInterval(interval);
+    }
+  }, [showServiceLogs, serviceActionBusy, updateServiceLogs]);
+
+  useEffect(() => {
+    if (showServiceLogs && serviceLogsEndRef.current) {
+      serviceLogsEndRef.current.scrollTop = serviceLogsEndRef.current.scrollHeight;
+    }
+  }, [serviceLogs, showServiceLogs]);
 
   const updateTunnelStatus = useCallback(async () => {
     try {
@@ -732,13 +769,16 @@ function App() {
 
   const handleStartService = async () => {
     setServiceActionBusy(true);
+    setShowServiceLogs(true);
     setServiceFeedback("正在启动 GPTMCP 后台服务…");
     try {
       const result = await invoke<ServiceControlResult>("start_gptmcp_service");
       setServiceFeedback(result.message);
+      await updateServiceLogs();
       await refreshAll();
     } catch (err) {
       setServiceFeedback(`启动失败: ${String(err)}`);
+      await updateServiceLogs();
     } finally {
       setServiceActionBusy(false);
       setTimeout(() => setServiceFeedback(null), 4000);
@@ -748,13 +788,16 @@ function App() {
   const handleStopService = async () => {
     if (!window.confirm("确定停止 GPTMCP 后台服务吗？这将中断当前连接。")) return;
     setServiceActionBusy(true);
+    setShowServiceLogs(true);
     setServiceFeedback("正在停止 GPTMCP 后台服务…");
     try {
       const result = await invoke<ServiceControlResult>("stop_gptmcp_service");
       setServiceFeedback(result.message);
+      await updateServiceLogs();
       await refreshAll();
     } catch (err) {
       setServiceFeedback(`停止失败: ${String(err)}`);
+      await updateServiceLogs();
     } finally {
       setServiceActionBusy(false);
       setTimeout(() => setServiceFeedback(null), 4000);
@@ -763,13 +806,16 @@ function App() {
 
   const handleRestartService = async () => {
     setServiceActionBusy(true);
+    setShowServiceLogs(true);
     setServiceFeedback("正在重启 GPTMCP 后台服务…");
     try {
       const result = await invoke<ServiceControlResult>("restart_gptmcp_service");
       setServiceFeedback(result.message);
+      await updateServiceLogs();
       await refreshAll();
     } catch (err) {
       setServiceFeedback(`重启失败: ${String(err)}`);
+      await updateServiceLogs();
     } finally {
       setServiceActionBusy(false);
       setTimeout(() => setServiceFeedback(null), 4000);
@@ -1324,13 +1370,25 @@ function App() {
                         <span>启动后台守护服务以监听 MCP 工具调用与遥测数据。</span>
                       </div>
                     </div>
-                    <button
-                      disabled={serviceActionBusy}
-                      onClick={() => void handleStartService()}
-                    >
-                      <Play size={13} />
-                      {serviceActionBusy ? "正在启动…" : "一键启动服务"}
-                    </button>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <button
+                        className="service-action-btn"
+                        onClick={() => {
+                          setView("environment");
+                          setShowServiceLogs(true);
+                        }}
+                      >
+                        <TerminalSquare size={13} />
+                        查看服务日志
+                      </button>
+                      <button
+                        disabled={serviceActionBusy}
+                        onClick={() => void handleStartService()}
+                      >
+                        <Play size={13} />
+                        {serviceActionBusy ? "正在启动…" : "一键启动服务"}
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -1495,6 +1553,18 @@ function App() {
                       </>
                     )}
                     <button
+                      className={classNames("service-action-btn", showServiceLogs && "active")}
+                      onClick={() => {
+                        const nextState = !showServiceLogs;
+                        setShowServiceLogs(nextState);
+                        if (nextState) void updateServiceLogs();
+                      }}
+                      title="展开/收起核心服务运行与重启日志"
+                    >
+                      <TerminalSquare size={13} />
+                      {showServiceLogs ? "收起日志" : "服务日志"}
+                    </button>
+                    <button
                       className="service-action-btn"
                       onClick={() => void refreshAll()}
                       title="刷新连接检测"
@@ -1508,6 +1578,56 @@ function App() {
                 {serviceFeedback && (
                   <div className="monitor-inline-error" style={{ background: "var(--monitor-panel-soft)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)" }}>
                     {serviceFeedback}
+                  </div>
+                )}
+
+                {showServiceLogs && (
+                  <div className="monitor-info-panel" style={{ marginTop: 12 }}>
+                    <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <TerminalSquare size={14} color="var(--monitor-blue)" />
+                        <strong>GPTMCP 核心服务控制台 / 启动 / 重启日志</strong>
+                        <span style={{ fontSize: 11, color: "var(--monitor-text-soft)" }}>
+                          {isServiceOnline ? "状态: 监听在 7676 端口" : "状态: 服务已停止"}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => void handleClearServiceLogs()}
+                          title="清空服务日志"
+                        >
+                          清空
+                        </button>
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => void updateServiceLogs()}
+                          title="刷新服务日志"
+                        >
+                          刷新
+                        </button>
+                      </div>
+                    </header>
+                    <pre
+                      ref={serviceLogsEndRef}
+                      style={{
+                        maxHeight: 240,
+                        overflowY: "auto",
+                        background: "var(--monitor-bg)",
+                        padding: "10px 12px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        fontFamily: "monospace",
+                        margin: "8px 0 0 0",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-all"
+                      }}
+                    >
+                      {serviceLogs?.length ? serviceLogs.join("\n") : "暂无服务日志。点击「启动服务」或「重启服务」将实时输出进程生命周期日志。"}
+                    </pre>
                   </div>
                 )}
               </div>
