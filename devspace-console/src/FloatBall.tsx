@@ -217,28 +217,28 @@ export function FloatBall() {
               onClick={(e) => e.stopPropagation()}
             >
               <button
-                className="float-action-pill"
+                className="float-action-icon-btn"
                 onClick={handleOpenMain}
                 onMouseDown={(e) => e.stopPropagation()}
-                title="呼出主控制台"
+                title="呼出主控制台 (双击亦可直接打开)"
               >
-                <ExternalLink size={10} /> 控制台
+                <ExternalLink size={12} />
               </button>
               <button
-                className="float-action-pill"
+                className="float-action-icon-btn"
                 onClick={handleToggleShape}
                 onMouseDown={(e) => e.stopPropagation()}
                 title="切换为圆形水球"
               >
-                <RotateCw size={10} /> 切换
+                <RotateCw size={12} />
               </button>
               <button
-                className="float-action-pill danger"
+                className="float-action-icon-btn danger"
                 onClick={handleCloseFloat}
                 onMouseDown={(e) => e.stopPropagation()}
                 title="关闭悬浮球"
               >
-                <X size={10} /> 关闭
+                <X size={12} />
               </button>
             </div>
           </>
