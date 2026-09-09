@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Activity,
   AlertTriangle,
+  BookmarkCheck,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -13,13 +14,16 @@ import {
   Copy,
   Cpu,
   Database,
+  Download,
   ExternalLink,
   FileCode2,
   FileSearch,
+  FileText,
   Folder,
   Gauge,
   Globe,
   HardDrive,
+  Info,
   Loader2,
   Minus,
   Moon,
@@ -31,10 +35,12 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  Sparkles,
   Square,
   Star,
   Sun,
   TerminalSquare,
+  Trash2,
   X,
   XCircle,
   Zap,
@@ -43,9 +49,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useCodingConsoleData } from "./coding-console-data";
 import { consoleApi, withQuery } from "./console-api";
 import { ProcessManager } from "./ProcessManager";
-import type { LogEvent, LogKind, LogStatus, WorkspaceItem } from "./types";
+import type { AllowedRootInfo, LogEvent, LogKind, LogStatus, SkillItemInfo, WorkspaceCheckpointRecord, WorkspaceItem, WorkspaceSessionInfo } from "./types";
 
-type MainView = "logs" | "processes" | "optimizer" | "environment";
+type MainView = "logs" | "processes" | "optimizer" | "environment" | "skills" | "roots" | "settings";
 type Theme = "light" | "dark";
 type StatusFilter = "all" | "error" | "success" | "running";
 
@@ -138,15 +144,7 @@ interface ProcessListResponse {
   processes: Array<{ running: boolean }>;
 }
 
-const categories: Array<{ id: "all" | LogKind; label: string; icon: typeof Activity }> = [
-  { id: "all", label: "全部", icon: Activity },
-  { id: "command", label: "命令", icon: TerminalSquare },
-  { id: "edit", label: "编辑", icon: Code2 },
-  { id: "file", label: "文件", icon: FileCode2 },
-  { id: "process", label: "进程", icon: Cpu },
-  { id: "search", label: "搜索", icon: FileSearch },
-  { id: "system", label: "系统", icon: Settings },
-];
+
 
 function formatUptime(seconds: number | undefined) {
   if (seconds === undefined) return "—";
@@ -246,10 +244,8 @@ function WorkspaceRow({
 
 function ExpandedEvent({
   event,
-  onFavorite,
 }: {
   event: LogEvent;
-  onFavorite: (event: LogEvent) => Promise<void>;
 }) {
   const [cmdCopied, setCmdCopied] = useState(false);
   const [outCopied, setOutCopied] = useState(false);
@@ -282,24 +278,7 @@ function ExpandedEvent({
           <strong>{event.summary}</strong>
           <small>{event.tool} · {event.time} · {event.duration}</small>
         </div>
-        <button
-          className={classNames("monitor-icon-button", event.favorite && "active")}
-          title={event.favorite ? "取消收藏" : "收藏日志"}
-          onClick={(mouseEvent) => {
-            mouseEvent.stopPropagation();
-            void onFavorite(event);
-          }}
-        >
-          <Star size={15} fill={event.favorite ? "currentColor" : "none"} />
-        </button>
       </header>
-
-      <div className="monitor-expanded-summary">
-        <div><span>状态</span><strong>{statusLabel(event.status)}</strong></div>
-        <div><span>工具</span><strong className="mono">{event.tool}</strong></div>
-        <div><span>耗时</span><strong>{event.duration}</strong></div>
-        <div><span>目标</span><strong className="mono ellipsis" title={event.target}>{event.target ?? "—"}</strong></div>
-      </div>
 
       {event.command && (
         <section className="monitor-expanded-section">
@@ -357,87 +336,1056 @@ function ExpandedEvent({
           <pre>{output}</pre>
         </section>
       )}
-
-      <section className="monitor-expanded-section">
-        <div className="monitor-section-title"><span>调用参数 (JSON)</span></div>
-        <pre>{JSON.stringify(event.params ?? {}, null, 2)}</pre>
-      </section>
-
-      {event.files?.length ? (
-        <section className="monitor-files">
-          <span>关联文件:</span>
-          {event.files.map((file) => (
-            <code key={file} title={file}>{file}</code>
-          ))}
-        </section>
-      ) : null}
     </div>
   );
 }
 
-function SettingsDialog({
+function getCheckpointMarkdown(cp: WorkspaceCheckpointRecord): string {
+  const lines: string[] = [
+    `# WebMCP Checkpoint - ${cp.id}`,
+    "",
+    `- **保存时间**: ${new Date(cp.createdAt).toLocaleString("zh-CN")}`,
+    `- **项目工作区**: \`${cp.root}\``,
+    ...(cp.facts?.gitBranch ? [`- **Git 分支**: \`${cp.facts.gitBranch}\``] : []),
+    ...(cp.facts?.gitHead ? [`- **Git 提交**: \`${cp.facts.gitHead}\``] : []),
+    "",
+    `## 🎯 目标 (Goal)`,
+    cp.state.goal,
+    "",
+    `## ⚡ 当前任务 (Current Task)`,
+    cp.state.currentTask,
+    "",
+  ];
+  if (cp.state.completed && cp.state.completed.length > 0) {
+    lines.push("## ✅ 已完成清单 (Completed)");
+    cp.state.completed.forEach((item) => lines.push(`- ${item}`));
+    lines.push("");
+  }
+  if (cp.state.decisions && cp.state.decisions.length > 0) {
+    lines.push("## 💡 决策与依据 (Decisions)");
+    cp.state.decisions.forEach((item) => lines.push(`- ${item}`));
+    lines.push("");
+  }
+  if (cp.state.files && cp.state.files.length > 0) {
+    lines.push("## 📁 关键文件 (Files)");
+    cp.state.files.forEach((item) => lines.push(`- \`${item}\``));
+    lines.push("");
+  }
+  if (cp.state.verification && cp.state.verification.length > 0) {
+    lines.push("## 🧪 验证与测试 (Verification)");
+    cp.state.verification.forEach((item) => lines.push(`- ${item}`));
+    lines.push("");
+  }
+  if (cp.state.blockers && cp.state.blockers.length > 0) {
+    lines.push("## ⚠️ 阻塞项与风险 (Blockers)");
+    cp.state.blockers.forEach((item) => lines.push(`- ${item}`));
+    lines.push("");
+  }
+  if (cp.state.next && cp.state.next.length > 0) {
+    lines.push("## 🚀 下一步计划 (Next Steps)");
+    cp.state.next.forEach((item) => lines.push(`- ${item}`));
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function SettingsAndCheckpointsView({
+  workspace,
   retentionDays,
   storedEvents,
   databasePath,
   databaseBytes,
   busy,
-  onClose,
   onSave,
   onCleanup,
   onClear,
 }: {
+  workspace: WorkspaceItem | null;
   retentionDays: number;
   storedEvents: number;
   databasePath: string;
   databaseBytes: number;
   busy: boolean;
-  onClose: () => void;
   onSave: (days: number) => Promise<void>;
   onCleanup: () => Promise<void>;
   onClear: () => Promise<void>;
 }) {
   const [days, setDays] = useState(retentionDays);
+  const [savedNotice, setSavedNotice] = useState(false);
+  const [checkpoints, setCheckpoints] = useState<WorkspaceCheckpointRecord[]>([]);
+  const [loadingCheckpoints, setLoadingCheckpoints] = useState(false);
+  const [checkpointError, setCheckpointError] = useState<string | null>(null);
+  const [expandedCpId, setExpandedCpId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const loadCheckpoints = useCallback(async () => {
+    if (!workspace?.path) {
+      setCheckpoints([]);
+      return;
+    }
+    setLoadingCheckpoints(true);
+    setCheckpointError(null);
+    try {
+      const res = await consoleApi<{ ok: boolean; checkpoints?: WorkspaceCheckpointRecord[]; error?: string }>(
+        "GET",
+        withQuery("/console/memory", { workspaceRoot: workspace.path, mode: "checkout" }),
+      );
+      if (res.ok && Array.isArray(res.checkpoints)) {
+        setCheckpoints(res.checkpoints);
+        if (res.checkpoints.length > 0 && !expandedCpId) {
+          setExpandedCpId(res.checkpoints[0].id);
+        }
+      } else {
+        setCheckpoints([]);
+        if (res.error) setCheckpointError(res.error);
+      }
+    } catch (err) {
+      setCheckpointError(err instanceof Error ? err.message : String(err));
+      setCheckpoints([]);
+    } finally {
+      setLoadingCheckpoints(false);
+    }
+  }, [workspace?.path]);
+
+  useEffect(() => {
+    void loadCheckpoints();
+  }, [loadCheckpoints]);
+
+  const handleCopy = (id: string, text: string) => {
+    void navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 1800);
+  };
+
+  const handleDownload = (filename: string, content: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSaveSettings = async () => {
+    await onSave(days);
+    setSavedNotice(true);
+    setTimeout(() => setSavedNotice(false), 2000);
+  };
+
   return (
-    <div className="monitor-modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="monitor-modal" role="dialog" aria-modal="true" aria-label="Console 设置">
+    <section className="monitor-overview-view monitor-settings-view">
+      <div className="monitor-page-heading">
+        <span className="monitor-page-icon"><BookmarkCheck size={20} /></span>
+        <div>
+          <strong>快照管理与 Console 设置</strong>
+          <small>查看工作区 Checkpoint 历史快照、导出 Markdown/JSON 及维护本地遥测存储</small>
+        </div>
+      </div>
+
+      {/* Checkpoints Section */}
+      <div className="monitor-info-panel monitor-checkpoints-panel">
         <header>
-          <div>
-            <span className="monitor-modal-icon"><Settings size={18} /></span>
-            <div><strong>Console 全局设置</strong><small>日志存储与本地遥测监控</small></div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <BookmarkCheck size={17} color="var(--monitor-blue)" />
+            <strong>工作区 Checkpoint 历史快照 ({checkpoints.length})</strong>
           </div>
-          <button className="monitor-icon-button" onClick={onClose}><X size={16} /></button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "var(--monitor-muted)" }}>
+              {workspace ? workspace.path : "未选择工作区"}
+            </span>
+            <button
+              className="monitor-service-quick-btn"
+              disabled={loadingCheckpoints}
+              onClick={() => void loadCheckpoints()}
+              style={{ padding: "4px 10px" }}
+            >
+              <RefreshCw size={12} className={loadingCheckpoints ? "spinning" : ""} />
+              <span>刷新快照</span>
+            </button>
+          </div>
         </header>
-        <div className="monitor-modal-body">
-          <label className="monitor-setting-row">
-            <div>
-              <strong>日志保留时间</strong>
-              <span>只影响 Console 本地 SQLite 旁路 telemetry 数据。</span>
+
+        <div className="monitor-checkpoints-list">
+          {checkpointError && (
+            <div className="monitor-connection-warning" style={{ margin: "12px 16px" }}>
+              <AlertTriangle size={15} />
+              <div><strong>快照读取失败</strong><span>{checkpointError}</span></div>
             </div>
-            <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
-              {[1, 3, 7, 14, 30, 90].map((value) => <option key={value} value={value}>{value} 天</option>)}
-            </select>
-          </label>
-          <div className="monitor-storage-card">
-            <Database size={18} color="var(--monitor-blue)" />
+          )}
+
+          {!checkpoints.length && !loadingCheckpoints && (
+            <div className="monitor-sidebar-empty" style={{ minHeight: 140 }}>
+              <BookmarkCheck size={26} color="var(--monitor-muted)" />
+              <span>当前工作区暂无 Checkpoint 检查点</span>
+              <small>在 AI 对话中达成阶段性目标或暂停工作时，AI 会自动调用 checkpoint 保存快照并同步导出 MD/JSON 文件。</small>
+            </div>
+          )}
+
+          {loadingCheckpoints && !checkpoints.length && (
+            <div className="monitor-sidebar-empty" style={{ minHeight: 120 }}>
+              <Loader2 className="spinning" size={22} color="var(--monitor-blue)" />
+              <span>正在读取 Checkpoint 历史记录…</span>
+            </div>
+          )}
+
+          {checkpoints.map((cp) => {
+            const isExpanded = expandedCpId === cp.id;
+            const md = getCheckpointMarkdown(cp);
+            const json = JSON.stringify(cp, null, 2);
+            const dateStr = new Date(cp.createdAt).toLocaleString("zh-CN");
+
+            return (
+              <div key={cp.id} className={classNames("monitor-checkpoint-card", isExpanded && "expanded")}>
+                <div className="monitor-checkpoint-header" onClick={() => setExpandedCpId(isExpanded ? null : cp.id)}>
+                  <span className="monitor-expand">
+                    {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                  </span>
+                  <div className="monitor-checkpoint-meta">
+                    <span className="monitor-cp-time">{dateStr}</span>
+                    <code className="monitor-cp-id">{cp.id.slice(0, 8)}</code>
+                    {cp.facts?.gitBranch && (
+                      <span className="monitor-cp-tag">{cp.facts.gitBranch}</span>
+                    )}
+                  </div>
+                  <div className="monitor-cp-goal-snippet" title={cp.state.goal}>
+                    <strong>{cp.state.goal}</strong>
+                    <span>{cp.state.currentTask}</span>
+                  </div>
+                </div>
+
+                {isExpanded && (
+                  <div className="monitor-checkpoint-body">
+                    <div className="monitor-checkpoint-grid">
+                      <div className="monitor-cp-block">
+                        <label>🎯 核心目标 (Goal)</label>
+                        <p>{cp.state.goal}</p>
+                      </div>
+                      <div className="monitor-cp-block">
+                        <label>⚡ 当前任务 (Current Task)</label>
+                        <p>{cp.state.currentTask}</p>
+                      </div>
+                    </div>
+
+                    {cp.state.completed && cp.state.completed.length > 0 && (
+                      <div className="monitor-cp-section">
+                        <label>✅ 已完成清单 (Completed)</label>
+                        <ul>{cp.state.completed.map((item, idx) => <li key={idx}>{item}</li>)}</ul>
+                      </div>
+                    )}
+
+                    {cp.state.decisions && cp.state.decisions.length > 0 && (
+                      <div className="monitor-cp-section">
+                        <label>💡 架构决策与依据 (Decisions)</label>
+                        <ul>{cp.state.decisions.map((item, idx) => <li key={idx}>{item}</li>)}</ul>
+                      </div>
+                    )}
+
+                    {cp.state.files && cp.state.files.length > 0 && (
+                      <div className="monitor-cp-section">
+                        <label>📁 关键文件 (Files)</label>
+                        <div className="monitor-cp-file-list">
+                          {cp.state.files.map((file, idx) => <code key={idx}>{file}</code>)}
+                        </div>
+                      </div>
+                    )}
+
+                    {cp.state.verification && cp.state.verification.length > 0 && (
+                      <div className="monitor-cp-section">
+                        <label>🧪 验证与测试 (Verification)</label>
+                        <ul>{cp.state.verification.map((item, idx) => <li key={idx}>{item}</li>)}</ul>
+                      </div>
+                    )}
+
+                    {cp.state.blockers && cp.state.blockers.length > 0 && (
+                      <div className="monitor-cp-section danger">
+                        <label>⚠️ 阻塞项与风险 (Blockers)</label>
+                        <ul>{cp.state.blockers.map((item, idx) => <li key={idx}>{item}</li>)}</ul>
+                      </div>
+                    )}
+
+                    {cp.state.next && cp.state.next.length > 0 && (
+                      <div className="monitor-cp-section next">
+                        <label>🚀 下一步计划 (Next Steps)</label>
+                        <ul>{cp.state.next.map((item, idx) => <li key={idx}>{item}</li>)}</ul>
+                      </div>
+                    )}
+
+                    <div className="monitor-checkpoint-actions-bar">
+                      <button
+                        className="monitor-service-quick-btn"
+                        onClick={() => handleCopy(`md-${cp.id}`, md)}
+                      >
+                        {copiedId === `md-${cp.id}` ? <Check size={13} color="var(--monitor-green)" /> : <FileText size={13} />}
+                        <span>{copiedId === `md-${cp.id}` ? "已复制 Markdown" : "复制 Markdown"}</span>
+                      </button>
+                      <button
+                        className="monitor-service-quick-btn"
+                        onClick={() => handleCopy(`json-${cp.id}`, json)}
+                      >
+                        {copiedId === `json-${cp.id}` ? <Check size={13} color="var(--monitor-green)" /> : <Code2 size={13} />}
+                        <span>{copiedId === `json-${cp.id}` ? "已复制 JSON" : "复制 JSON"}</span>
+                      </button>
+                      <button
+                        className="monitor-service-quick-btn primary"
+                        onClick={() => handleDownload(`CHECKPOINT_${cp.id.slice(0, 8)}.md`, md, "text/markdown")}
+                      >
+                        <Download size={13} />
+                        <span>导出 .md 文件</span>
+                      </button>
+                      <button
+                        className="monitor-service-quick-btn"
+                        onClick={() => handleDownload(`CHECKPOINT_${cp.id.slice(0, 8)}.json`, json, "application/json")}
+                      >
+                        <Download size={13} />
+                        <span>导出 .json 文件</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Storage & Telemetry Settings Section */}
+      <div className="monitor-info-panel">
+        <header>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Database size={17} color="var(--monitor-blue)" />
+            <strong>Console 本地遥测与日志存储设置</strong>
+          </div>
+        </header>
+
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+          <label className="monitor-setting-row" style={{ margin: 0 }}>
             <div>
-              <strong>{storedEvents.toLocaleString("zh-CN")} 条日志记录</strong>
-              <span title={databasePath}>{databasePath || "SQLite 路径不可用"}</span>
+              <strong>日志自动保留周期</strong>
+              <span>控制 Console 本地 SQLite 遥测数据的自动过期清理时间。</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
+                {[1, 3, 7, 14, 30, 90].map((value) => <option key={value} value={value}>{value} 天</option>)}
+              </select>
+              <button className="monitor-service-quick-btn primary" disabled={busy} onClick={() => void handleSaveSettings()}>
+                {busy ? "保存中…" : savedNotice ? "已保存 ✓" : "保存设置"}
+              </button>
+            </div>
+          </label>
+
+          <div className="monitor-storage-card">
+            <Database size={20} color="var(--monitor-blue)" />
+            <div>
+              <strong>{storedEvents.toLocaleString("zh-CN")} 条遥测日志记录</strong>
+              <span title={databasePath}>{databasePath || "SQLite 数据库就绪"}</span>
             </div>
             <small>{databaseBytes ? `${(databaseBytes / 1024 / 1024).toFixed(1)} MB` : "—"}</small>
           </div>
+
           <div className="monitor-maintenance-actions">
-            <button disabled={busy} onClick={() => void onCleanup()}>清理过期日志</button>
-            <button className="danger" disabled={busy || storedEvents === 0} onClick={() => void onClear()}>清空全部日志</button>
+            <button className="monitor-service-quick-btn" disabled={busy} onClick={() => void onCleanup()}>
+              清理过期日志
+            </button>
+            <button className="monitor-service-quick-btn danger" disabled={busy || storedEvents === 0} onClick={() => void onClear()}>
+              清空全部历史日志
+            </button>
           </div>
         </div>
-        <footer>
-          <button onClick={onClose}>取消</button>
-          <button className="primary" disabled={busy} onClick={() => void onSave(days)}>
-            {busy ? "保存中…" : "保存设置"}
+      </div>
+    </section>
+  );
+}
+
+function SkillsManagerView({
+  workspace,
+}: {
+  workspace: WorkspaceItem | null;
+}) {
+  const [skills, setSkills] = useState<SkillItemInfo[]>([]);
+  const [bundledDir, setBundledDir] = useState<string>("");
+  const [globalDir, setGlobalDir] = useState<string>("");
+  const [workspaceDir, setWorkspaceDir] = useState<string | undefined>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [expandedSkillName, setExpandedSkillName] = useState<string | null>(null);
+  const [copiedSkillName, setCopiedSkillName] = useState<string | null>(null);
+
+  const fetchSkills = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await consoleApi<{
+        ok: boolean;
+        skills: SkillItemInfo[];
+        bundledDir: string;
+        workspaceDir?: string;
+        globalDir: string;
+        error?: string;
+      }>("GET", withQuery("/console/skills", { workspaceRoot: workspace?.path }));
+      if (res.ok) {
+        setSkills(res.skills || []);
+        setBundledDir(res.bundledDir || "");
+        setGlobalDir(res.globalDir || "");
+        setWorkspaceDir(res.workspaceDir);
+      } else {
+        setError(res.error || "获取技能列表失败");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [workspace?.path]);
+
+  useEffect(() => {
+    void fetchSkills();
+  }, [fetchSkills]);
+
+  const handleApply = async (skillName: string, target: "workspace" | "global") => {
+    setActionBusy(`${skillName}-${target}`);
+    setActionFeedback(null);
+    try {
+      const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
+        "POST",
+        "/console/skills/apply",
+        { skillName, target, workspaceRoot: workspace?.path },
+      );
+      if (res.ok) {
+        setActionFeedback(res.message || "应用成功！");
+        await fetchSkills();
+      } else {
+        setError(res.error || "应用失败");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+      setTimeout(() => setActionFeedback(null), 3000);
+    }
+  };
+
+  const handleRemove = async (skillName: string, target: "workspace" | "global") => {
+    setActionBusy(`${skillName}-${target}`);
+    setActionFeedback(null);
+    try {
+      const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
+        "POST",
+        "/console/skills/remove",
+        { skillName, target, workspaceRoot: workspace?.path },
+      );
+      if (res.ok) {
+        setActionFeedback(res.message || "移除成功！");
+        await fetchSkills();
+      } else {
+        setError(res.error || "移除失败");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+      setTimeout(() => setActionFeedback(null), 3000);
+    }
+  };
+
+  const handleCopySkill = (name: string, content: string) => {
+    void navigator.clipboard.writeText(content);
+    setCopiedSkillName(name);
+    setTimeout(() => setCopiedSkillName(null), 1800);
+  };
+
+  const filteredSkills = useMemo(() => {
+    if (!searchQuery.trim()) return skills;
+    const q = searchQuery.toLowerCase();
+    return skills.filter(
+      (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q) || s.content.toLowerCase().includes(q),
+    );
+  }, [skills, searchQuery]);
+
+  return (
+    <section className="monitor-overview-view monitor-skills-view">
+      <div className="monitor-page-heading">
+        <span className="monitor-page-icon"><Sparkles size={20} /></span>
+        <div>
+          <strong>Skills 技能中心 (Codex & WebMCP 扩展)</strong>
+          <small>内置标准化开发规范技能库，随时一键应用到当前工作区或全局环境</small>
+        </div>
+      </div>
+
+      {actionFeedback && (
+        <div className="monitor-feedback-banner success" style={{ margin: "0 0 16px" }}>
+          <Check size={16} />
+          <span>{actionFeedback}</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="monitor-connection-warning" style={{ margin: "0 0 16px" }}>
+          <AlertTriangle size={16} />
+          <div><strong>操作失败</strong><span>{error}</span></div>
+          <button onClick={() => void fetchSkills()}>重试</button>
+        </div>
+      )}
+
+      {/* Directory Status Row */}
+      <div className="monitor-metric-grid" style={{ marginBottom: 16 }}>
+        <Metric label="内置技能库目录" value={bundledDir ? bundledDir.split(/[\\/]/).pop() || "skills" : "skills"} note={bundledDir || "dist/skills"} />
+        <Metric
+          label="当前工作区技能"
+          value={workspace ? `${skills.filter((s) => s.appliedToWorkspace).length} 已应用` : "未选择工作区"}
+          note={workspaceDir || "—"}
+        />
+        <Metric
+          label="全局技能目录"
+          value={`${skills.filter((s) => s.installedGlobally).length} 已安装`}
+          note={globalDir || "~/.webmcp/skills"}
+        />
+      </div>
+
+      {/* Toolbar & Search */}
+      <div className="monitor-skills-toolbar">
+        <div className="monitor-search" style={{ maxWidth: 360 }}>
+          <Search size={14} />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="搜索技能名称、描述或规范内容..."
+          />
+          {searchQuery && <button onClick={() => setSearchQuery("")}><X size={12} /></button>}
+        </div>
+
+        <button
+          className="monitor-service-quick-btn"
+          disabled={loading}
+          onClick={() => void fetchSkills()}
+          style={{ padding: "6px 12px" }}
+        >
+          <RefreshCw size={13} className={loading ? "spinning" : ""} />
+          <span>刷新技能库</span>
+        </button>
+      </div>
+
+      {/* Skills Grid */}
+      <div className="monitor-skills-grid">
+        {!filteredSkills.length && !loading && (
+          <div className="monitor-sidebar-empty" style={{ gridColumn: "1 / -1", minHeight: 180 }}>
+            <Sparkles size={32} color="var(--monitor-muted)" />
+            <span>未找到匹配的技能</span>
+            <small>尝试清空搜索框或检查内置技能库目录。</small>
+          </div>
+        )}
+
+        {filteredSkills.map((skill) => {
+          const isExpanded = expandedSkillName === skill.name;
+          const isWorkspaceBusy = actionBusy === `${skill.name}-workspace`;
+          const isGlobalBusy = actionBusy === `${skill.name}-global`;
+
+          return (
+            <article key={skill.name} className={classNames("monitor-skill-card", isExpanded && "expanded")}>
+              <div className="monitor-skill-card-top">
+                <div className="monitor-skill-header-row">
+                  <div className="monitor-skill-title-group">
+                    <span className="monitor-skill-icon"><Sparkles size={16} /></span>
+                    <strong>{skill.name}</strong>
+                    {skill.version && <span className="monitor-skill-ver">v{skill.version}</span>}
+                  </div>
+                  <div className="monitor-skill-status-tags">
+                    {skill.appliedToWorkspace && (
+                      <span className="monitor-tag-badge workspace" title="已在当前工作区激活">
+                        <Check size={11} /> 工作区已应用
+                      </span>
+                    )}
+                    {skill.installedGlobally && (
+                      <span className="monitor-tag-badge global" title="已在全局环境激活">
+                        <Globe size={11} /> 全局已安装
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <p className="monitor-skill-desc">{skill.description}</p>
+              </div>
+
+              <div className="monitor-skill-card-actions">
+                <button
+                  className="monitor-skill-expand-btn"
+                  onClick={() => setExpandedSkillName(isExpanded ? null : skill.name)}
+                >
+                  <FileText size={12} />
+                  <span>{isExpanded ? "收起说明" : "查看 SKILL.md"}</span>
+                  {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                </button>
+
+                <div className="monitor-skill-btn-group">
+                  {workspace && (
+                    skill.appliedToWorkspace ? (
+                      <button
+                        className="monitor-service-quick-btn danger"
+                        disabled={!!actionBusy}
+                        onClick={() => void handleRemove(skill.name, "workspace")}
+                        title="从当前工作区移除此技能"
+                      >
+                        <Trash2 size={12} />
+                        <span>{isWorkspaceBusy ? "移除中…" : "从工作区移除"}</span>
+                      </button>
+                    ) : (
+                      <button
+                        className="monitor-service-quick-btn primary"
+                        disabled={!!actionBusy}
+                        onClick={() => void handleApply(skill.name, "workspace")}
+                        title="将此技能复制并应用到当前工作区"
+                      >
+                        <Plus size={12} />
+                        <span>{isWorkspaceBusy ? "应用中…" : "应用到工作区"}</span>
+                      </button>
+                    )
+                  )}
+
+                  {skill.installedGlobally ? (
+                    <button
+                      className="monitor-service-quick-btn"
+                      disabled={!!actionBusy}
+                      onClick={() => void handleRemove(skill.name, "global")}
+                      title="从全局 ~/.webmcp/skills 移除"
+                    >
+                      <Trash2 size={12} />
+                      <span>{isGlobalBusy ? "移除中…" : "全局卸载"}</span>
+                    </button>
+                  ) : (
+                    <button
+                      className="monitor-service-quick-btn"
+                      disabled={!!actionBusy}
+                      onClick={() => void handleApply(skill.name, "global")}
+                      title="安装到全局 ~/.webmcp/skills"
+                    >
+                      <Globe size={12} />
+                      <span>{isGlobalBusy ? "安装中…" : "安装到全局"}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {isExpanded && (
+                <div className="monitor-skill-expanded-content">
+                  <div className="monitor-skill-content-header">
+                    <span><code>{skill.filePath}</code></span>
+                    <button
+                      className="monitor-service-quick-btn"
+                      onClick={() => handleCopySkill(skill.name, skill.content)}
+                      style={{ padding: "3px 8px" }}
+                    >
+                      {copiedSkillName === skill.name ? <Check size={11} color="var(--monitor-green)" /> : <Copy size={11} />}
+                      <span>{copiedSkillName === skill.name ? "已复制" : "复制规范"}</span>
+                    </button>
+                  </div>
+                  <pre className="monitor-skill-markdown-view">{skill.content}</pre>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+
+function normalizeDisplayPath(p: string): string {
+  if (!p) return "";
+  return p.replace(/[\\/]+/g, "\\");
+}
+
+function RootsManagerView({
+  onSelectWorkspace,
+  onRefreshWorkspaces,
+}: {
+  onSelectWorkspace: (id: string) => void;
+  onRefreshWorkspaces: () => Promise<void>;
+}) {
+  const [roots, setRoots] = useState<AllowedRootInfo[]>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceSessionInfo[]>([]);
+  const [configPath, setConfigPath] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
+  const [newRootInput, setNewRootInput] = useState("");
+  const [isServiceOfflineNotice, setIsServiceOfflineNotice] = useState(false);
+
+  const fetchRootsData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setIsServiceOfflineNotice(false);
+
+    try {
+      // 1. Try to fetch from online WebMCP backend
+      const res = await consoleApi<{
+        ok: boolean;
+        allowedRoots: AllowedRootInfo[];
+        workspaces: WorkspaceSessionInfo[];
+        configPath: string;
+        error?: string;
+      }>("GET", "/console/roots");
+      if (res.ok) {
+        setRoots(res.allowedRoots || []);
+        setWorkspaces(res.workspaces || []);
+        setConfigPath(res.configPath || "");
+        return;
+      }
+    } catch {
+      // Fallback to local config file if service is offline
+    }
+
+    try {
+      const cfg = await invoke<{
+        publicBaseUrl?: string | null;
+        ownerToken?: string | null;
+        allowedRoots?: string[];
+        configDir?: string | null;
+      }>("get_webmcp_config");
+
+      const rootsList = cfg.allowedRoots || [];
+      const localRoots: AllowedRootInfo[] = rootsList.map((r) => ({
+        path: r,
+        exists: true,
+        isDrive: /^[a-zA-Z]:[\\/]?$/.test(r),
+        workspacesCount: 0,
+      }));
+
+      setRoots(localRoots);
+      setConfigPath(cfg.configDir ? `${cfg.configDir}\\config.json` : "~/.webmcp/config.json");
+      setIsServiceOfflineNotice(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchRootsData();
+  }, [fetchRootsData]);
+
+  const handleBrowseFolder = async () => {
+    try {
+      const selected = await invoke<string | null>("select_folder_dialog");
+      if (selected) {
+        setNewRootInput(normalizeDisplayPath(selected));
+      }
+    } catch (err) {
+      setError(`选择文件夹失败: ${String(err)}`);
+    }
+  };
+
+  const handleAddRoot = async (targetPath?: string) => {
+    const raw = (targetPath || newRootInput).trim();
+    if (!raw) return;
+    const p = normalizeDisplayPath(raw);
+    setActionBusy("add-root");
+    setActionFeedback(null);
+    try {
+      const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
+        "POST",
+        "/console/roots",
+        { path: p },
+      );
+      if (res.ok) {
+        setActionFeedback(res.message || "添加成功！");
+        setNewRootInput("");
+        await fetchRootsData();
+        return;
+      }
+    } catch {
+      // Backend service might be offline, fallback to direct Tauri IPC
+    }
+
+    try {
+      const current = roots.map((r) => normalizeDisplayPath(r.path));
+      if (!current.some((r) => r.toLowerCase() === p.toLowerCase())) {
+        const next = [...current, p];
+        await invoke("save_webmcp_allowed_roots", { roots: next });
+      }
+      setActionFeedback(`目录 ${p} 已成功添加至白名单！`);
+      setNewRootInput("");
+      await fetchRootsData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+      setTimeout(() => setActionFeedback(null), 3500);
+    }
+  };
+
+  const handleRemoveRoot = async (rawPath: string) => {
+    const pathToRemove = normalizeDisplayPath(rawPath);
+    if (!window.confirm(`确定从白名单中移除该目录吗？\n${pathToRemove}\n\n移除后 ChatGPT 将无法访问该目录。`)) return;
+    setActionBusy(`remove-${pathToRemove}`);
+    setActionFeedback(null);
+    try {
+      const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
+        "POST",
+        "/console/roots/remove",
+        { path: pathToRemove },
+      );
+      if (res.ok) {
+        setActionFeedback(res.message || "已成功移除白名单目录");
+        await fetchRootsData();
+        return;
+      }
+    } catch {
+      // Backend service might be offline, fallback to direct Tauri IPC
+    }
+
+    try {
+      const next = roots
+        .map((r) => normalizeDisplayPath(r.path))
+        .filter((r) => r.toLowerCase() !== pathToRemove.toLowerCase());
+      await invoke("save_webmcp_allowed_roots", { roots: next });
+      setActionFeedback("已成功移除白名单目录");
+      await fetchRootsData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+      setTimeout(() => setActionFeedback(null), 3500);
+    }
+  };
+
+  const handleRemoveWorkspace = async (workspaceId: string) => {
+    if (!window.confirm("确定移除该工作区会话记录吗？")) return;
+    setActionBusy(`remove-ws-${workspaceId}`);
+    try {
+      const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
+        "POST",
+        "/console/workspaces/remove",
+        { workspaceId },
+      );
+      if (res.ok) {
+        setActionFeedback(res.message || "工作区会话已移除");
+        await fetchRootsData();
+        await onRefreshWorkspaces();
+      } else {
+        setError(res.error || "移除失败");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+      setTimeout(() => setActionFeedback(null), 3500);
+    }
+  };
+
+  return (
+    <section className="monitor-overview-view monitor-roots-view">
+      <div className="monitor-page-heading">
+        <span className="monitor-page-icon"><ShieldCheck size={20} /></span>
+        <div>
+          <strong>目录白名单与工作区管理 (Allowed Roots & Workspaces)</strong>
+          <small>配置允许 ChatGPT 与 WebMCP 访问的本地目录白名单及已连接工作区</small>
+        </div>
+      </div>
+
+      {actionFeedback && (
+        <div className="monitor-feedback-banner success" style={{ margin: "0 0 16px" }}>
+          <Check size={16} />
+          <span>{actionFeedback}</span>
+        </div>
+      )}
+
+      {isServiceOfflineNotice && (
+        <div className="monitor-feedback-banner info" style={{ margin: "0 0 16px" }}>
+          <Info size={16} />
+          <span>后台 MCP 服务当前未启动，页面展示并直接管理本地 <code>config.json</code> 中的白名单配置。</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="monitor-connection-warning" style={{ margin: "0 0 16px" }}>
+          <AlertTriangle size={16} />
+          <div><strong>操作提示</strong><span>{error}</span></div>
+          <button onClick={() => void fetchRootsData()}>重试</button>
+        </div>
+      )}
+
+      {/* Metric Cards */}
+      <div className="monitor-metric-grid" style={{ marginBottom: 16 }}>
+        <Metric label="已授权根目录" value={`${roots.length} 个`} note="ChatGPT 仅可访问白名单范围内的目录" />
+        <Metric label="活跃工作区会话" value={`${workspaces.length} 个`} note="已在本地注册的工作区项目" />
+        <Metric label="全局配置文件" value={configPath.split(/[\\/]/).pop() || "config.json"} note={configPath || "~/.webmcp/config.json"} />
+      </div>
+
+      {/* Allowed Roots Section */}
+      <div className="monitor-info-panel" style={{ marginBottom: 16 }}>
+        <header className="monitor-card-header-clean">
+          <div className="monitor-card-header-title">
+            <Folder size={17} color="var(--monitor-blue)" />
+            <strong>授权访问根目录 (Allowed Roots 白名单)</strong>
+          </div>
+          <button
+            className="monitor-service-quick-btn monitor-btn-compact"
+            disabled={loading}
+            onClick={() => void fetchRootsData()}
+          >
+            <RefreshCw size={12} className={loading ? "spinning" : ""} />
+            <span>刷新列表</span>
           </button>
-        </footer>
-      </section>
-    </div>
+        </header>
+
+        <div style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Add root toolbar: Input + Browse Folder + Add Button */}
+          <div className="monitor-roots-toolbar">
+            <div className="monitor-roots-input-wrapper">
+              <Folder size={15} className="monitor-input-icon" />
+              <input
+                value={newRootInput}
+                onChange={(e) => setNewRootInput(e.target.value)}
+                placeholder="输入或选择要授权的工作区目录绝对路径 (如 D:\my-project)"
+                onKeyDown={(e) => { if (e.key === "Enter") void handleAddRoot(); }}
+              />
+            </div>
+            <button
+              className="monitor-service-quick-btn monitor-btn-browse"
+              onClick={() => void handleBrowseFolder()}
+              title="打开系统文件夹选择框选择目录"
+            >
+              <Folder size={13} />
+              <span>选择文件夹…</span>
+            </button>
+            <button
+              className="monitor-service-quick-btn primary monitor-btn-add"
+              disabled={!newRootInput.trim() || !!actionBusy}
+              onClick={() => void handleAddRoot()}
+            >
+              <Plus size={14} />
+              <span>{actionBusy === "add-root" ? "添加中…" : "添加到白名单"}</span>
+            </button>
+          </div>
+
+          {/* Roots List */}
+          <div className="monitor-roots-list">
+            {roots.map((root) => {
+              const displayPath = normalizeDisplayPath(root.path);
+              return (
+                <div key={root.path} className="monitor-root-card">
+                  <div className="monitor-root-card-left">
+                    <div className="monitor-root-icon">
+                      {root.isDrive ? <HardDrive size={18} /> : <Folder size={18} />}
+                    </div>
+                    <div className="monitor-root-details">
+                      <div className="monitor-root-header-line">
+                        <strong className="monitor-root-path-text">{displayPath}</strong>
+                        {root.exists ? (
+                          <span className="monitor-tag-badge workspace"><Check size={11} /> 路径有效</span>
+                        ) : (
+                          <span className="monitor-tag-badge" style={{ background: "rgba(239, 68, 68, 0.12)", color: "var(--monitor-red)" }}>
+                            <AlertTriangle size={11} /> 路径不存在
+                          </span>
+                        )}
+                        {root.isDrive && <span className="monitor-skill-ver">整盘根目录</span>}
+                      </div>
+                      <p className="monitor-root-sub-info">
+                        允许网页端 ChatGPT 与 WebMCP 访问并操作该目录下的文件与代码
+                        {root.workspacesCount > 0 && <span> • 包含 {root.workspacesCount} 个活跃工作区</span>}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    className="monitor-service-quick-btn danger monitor-btn-compact"
+                    disabled={!!actionBusy}
+                    onClick={() => void handleRemoveRoot(root.path)}
+                    title="从白名单中移除该目录"
+                  >
+                    <Trash2 size={13} />
+                    <span>移除</span>
+                  </button>
+                </div>
+              );
+            })}
+
+            {!roots.length && (
+              <div className="monitor-empty-state-card">
+                <div className="monitor-empty-state-icon">
+                  <ShieldCheck size={24} />
+                </div>
+                <div className="monitor-empty-state-title">暂无已配置的白名单目录</div>
+                <p className="monitor-empty-state-desc">请在上方点击「选择文件夹」或直接输入路径并添加到白名单中。</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Active Workspaces Section */}
+      <div className="monitor-info-panel">
+        <header className="monitor-card-header-clean">
+          <div className="monitor-card-header-title">
+            <BookmarkCheck size={17} color="var(--monitor-blue)" />
+            <strong>已记录的工作区会话 (Workspace Sessions)</strong>
+          </div>
+        </header>
+
+        <div style={{ padding: "18px 20px" }}>
+          <div className="monitor-roots-list">
+            {workspaces.map((ws) => {
+              const displayRoot = normalizeDisplayPath(ws.root);
+              const name = displayRoot.split(/[\\/]/).filter(Boolean).pop() || displayRoot;
+              return (
+                <div key={ws.id} className="monitor-root-card">
+                  <div className="monitor-root-card-left">
+                    <div className="monitor-root-icon" style={{ background: "var(--monitor-panel-soft)", color: "var(--monitor-text-soft)" }}>
+                      <Folder size={18} />
+                    </div>
+                    <div className="monitor-root-details">
+                      <div className="monitor-root-header-line">
+                        <strong>{name}</strong>
+                        <span className="monitor-tag-badge workspace">{ws.mode}</span>
+                        <code style={{ fontSize: 11, color: "var(--monitor-text-muted)" }}>{displayRoot}</code>
+                      </div>
+                      <p className="monitor-root-sub-info">
+                        最后活跃: {new Date(ws.lastUsedAt).toLocaleString("zh-CN")}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                    <button
+                      className="monitor-service-quick-btn primary monitor-btn-compact"
+                      onClick={() => onSelectWorkspace(ws.id)}
+                    >
+                      <Play size={12} />
+                      <span>查看日志</span>
+                    </button>
+                    <button
+                      className="monitor-service-quick-btn monitor-btn-compact"
+                      disabled={!!actionBusy}
+                      onClick={() => void handleRemoveWorkspace(ws.id)}
+                      title="移除此工作区会话记录"
+                    >
+                      <Trash2 size={13} />
+                      <span>移除</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            {!workspaces.length && (
+              <div className="monitor-empty-state-card">
+                <div className="monitor-empty-state-icon">
+                  <Folder size={24} />
+                </div>
+                <div className="monitor-empty-state-title">暂无活跃工作区会话</div>
+                <p className="monitor-empty-state-desc">当 ChatGPT 或本地打开任意项目工作区后，将在此自动记录会话与操作日志。</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -459,13 +1407,13 @@ function AddWorkspaceDialog({
         <header>
           <div>
             <span className="monitor-modal-icon"><Folder size={18} /></span>
-            <div><strong>添加本地工作区</strong><small>连接一个已有项目目录</small></div>
+            <div><strong>添加本地工作区</strong><small>连接已有项目并自动同步至 allowedRoots 白名单</small></div>
           </div>
           <button className="monitor-icon-button" onClick={onClose}><X size={16} /></button>
         </header>
         <div className="monitor-modal-body">
           <label className="monitor-path-field">
-            <span>绝对路径</span>
+            <span>项目绝对路径</span>
             <input
               autoFocus
               value={path}
@@ -473,6 +1421,10 @@ function AddWorkspaceDialog({
               placeholder="例如: D:\my-project 或 /Users/name/my-project"
             />
           </label>
+          <div style={{ fontSize: 11.5, color: "var(--monitor-text-soft)", marginTop: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            <ShieldCheck size={14} color="var(--monitor-green)" style={{ flexShrink: 0 }} />
+            <span>添加后将自动加入 <code>allowedRoots</code>，允许 ChatGPT 访问与操作该目录。</span>
+          </div>
           {error && <div className="monitor-inline-error">{error}</div>}
         </div>
         <footer>
@@ -509,7 +1461,6 @@ function App() {
 
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [view, setView] = useState<MainView>("logs");
-  const [category, setCategory] = useState<"all" | LogKind>("all");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
@@ -518,7 +1469,6 @@ function App() {
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [optimizer, setOptimizer] = useState<OptimizerStatus | null>(null);
   const [processCount, setProcessCount] = useState(0);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [addWorkspaceOpen, setAddWorkspaceOpen] = useState(false);
   const [addWorkspaceBusy, setAddWorkspaceBusy] = useState(false);
@@ -730,13 +1680,12 @@ function App() {
       if (statusFilter === "error" && event.status !== "error" && event.status !== "warning") return false;
       if (statusFilter === "success" && event.status !== "success") return false;
       if (statusFilter === "running" && event.status !== "running") return false;
-      if (category !== "all" && event.kind !== category) return false;
       if (!normalizedQuery) return true;
       return [event.tool, event.summary, event.target, event.command]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(normalizedQuery));
     });
-  }, [category, statusFilter, query, workspaceEvents]);
+  }, [statusFilter, query, workspaceEvents]);
 
   const errorCount = workspaceEvents.filter((event) => event.status === "error" || event.status === "warning").length;
   const history = workspace ? historyByWorkspace[workspace.id] : undefined;
@@ -927,7 +1876,6 @@ function App() {
     setSettingsBusy(true);
     try {
       await updateRetentionDays(days);
-      setSettingsOpen(false);
     } finally {
       setSettingsBusy(false);
     }
@@ -1016,30 +1964,59 @@ function App() {
             </div>
           </section>
 
-          <section className="monitor-sidebar-section monitor-global-nav">
+          <section className="monitor-sidebar-section monitor-sidebar-nav">
             <div className="monitor-sidebar-heading muted"><span>控制面板</span></div>
-            <button className={classNames(view === "logs" && "selected")} onClick={() => setView("logs")}>
+            <button
+              className={classNames("monitor-sidebar-nav-item", view === "logs" && "active")}
+              onClick={() => setView("logs")}
+            >
               <Activity size={15} />
               <span>实时日志</span>
               <em>{workspaceEvents.length}</em>
             </button>
-            <button className={classNames(view === "processes" && "selected")} onClick={() => setView("processes")}>
+            <button
+              className={classNames("monitor-sidebar-nav-item", view === "processes" && "active")}
+              onClick={() => setView("processes")}
+            >
               <TerminalSquare size={15} />
-              <span>运行进程</span>
+              <span>运行终端</span>
               <em>{processCount}</em>
             </button>
-            <button className={classNames(view === "optimizer" && "selected")} onClick={() => setView("optimizer")}>
+            <button
+              className={classNames("monitor-sidebar-nav-item", view === "optimizer" && "active")}
+              onClick={() => setView("optimizer")}
+            >
               <Zap size={15} />
               <span>性能与缓存</span>
-              <em>{optimizer?.cache.size ?? "—"}</em>
+              <em>{optimizer?.cache.size ?? 0}</em>
             </button>
-            <button className={classNames(view === "environment" && "selected")} onClick={() => setView("environment")}>
+            <button
+              className={classNames("monitor-sidebar-nav-item", view === "environment" && "active")}
+              onClick={() => setView("environment")}
+            >
               <ShieldCheck size={15} />
               <span>环境与服务</span>
             </button>
-            <button onClick={() => setSettingsOpen(true)}>
-              <Settings size={15} />
-              <span>全局设置</span>
+            <button
+              className={classNames("monitor-sidebar-nav-item", view === "skills" && "active")}
+              onClick={() => setView("skills")}
+            >
+              <Sparkles size={15} />
+              <span>Skills 技能库</span>
+            </button>
+            <button
+              className={classNames("monitor-sidebar-nav-item", view === "roots" && "active")}
+              onClick={() => setView("roots")}
+            >
+              <HardDrive size={15} />
+              <span>工作区与白名单</span>
+            </button>
+            <button
+              className={classNames("monitor-sidebar-nav-item", view === "settings" && "active")}
+              onClick={() => setView("settings")}
+            >
+              <BookmarkCheck size={15} />
+              <span>快照与设置</span>
             </button>
           </section>
 
@@ -1081,30 +2058,26 @@ function App() {
                   onClick={() => void handleStartService()}
                 >
                   <Play size={11} />
-                  {serviceActionBusy ? "启动中…" : "一键启动服务"}
+                  <span>启动服务</span>
                 </button>
               ) : (
-                <>
-                  <button
-                    className="monitor-service-quick-btn"
-                    disabled={serviceActionBusy}
-                    onClick={() => void handleRestartService()}
-                    title="重启后台服务"
-                  >
-                    <RotateCw size={11} className={serviceActionBusy ? "spinning" : ""} />
-                    重启
-                  </button>
-                  <button
-                    className="monitor-service-quick-btn"
-                    disabled={serviceActionBusy}
-                    onClick={() => void handleStopService()}
-                    title="停止服务"
-                  >
-                    <Square size={10} />
-                    停止
-                  </button>
-                </>
+                <button
+                  className="monitor-service-quick-btn danger"
+                  disabled={serviceActionBusy}
+                  onClick={() => void handleStopService()}
+                >
+                  <Square size={11} />
+                  <span>停止服务</span>
+                </button>
               )}
+              <button
+                className="monitor-service-quick-btn"
+                disabled={serviceActionBusy}
+                onClick={() => void handleRestartService()}
+              >
+                <RotateCw size={11} className={serviceActionBusy ? "spinning" : ""} />
+                <span>重启</span>
+              </button>
             </div>
           </section>
         </aside>
@@ -1137,6 +2110,7 @@ function App() {
                 </div>
               </div>
             </div>
+
             <div className="monitor-header-actions">
               <button
                 className="monitor-icon-button"
@@ -1146,9 +2120,9 @@ function App() {
                 <RefreshCw size={15} className={isRefreshing ? "spinning" : ""} />
               </button>
               <button
-                className="monitor-icon-button"
-                title="Console 全局设置"
-                onClick={() => setSettingsOpen(true)}
+                className={classNames("monitor-icon-button", view === "settings" && "active")}
+                title="快照管理与 Console 设置"
+                onClick={() => setView("settings")}
               >
                 <Settings size={15} />
               </button>
@@ -1158,11 +2132,6 @@ function App() {
           {view === "logs" && (
             <>
               <section className="monitor-log-toolbar">
-                <div className="monitor-view-tabs">
-                  <button className="active"><Activity size={14} />实时日志</button>
-                  <button onClick={() => setView("processes")}><TerminalSquare size={14} />运行终端</button>
-                </div>
-
                 <div className="monitor-status-filters">
                   <button
                     className={classNames("monitor-filter-chip", statusFilter === "all" && "active")}
@@ -1186,18 +2155,12 @@ function App() {
                   </button>
                 </div>
 
-                <div className="monitor-inline-stats">
-                  <span><Zap size={12} />{totalEvents} 调用</span>
-                  <span><TerminalSquare size={12} />{processCount} 进程</span>
-                  <span><FileSearch size={12} />{filteredEvents.length} 条可见</span>
-                </div>
-
                 <div className="monitor-search">
                   <Search size={14} />
                   <input
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="按工具名、命令或参数搜索..."
+                    placeholder="搜索工具、命令或执行结果..."
                   />
                   {query && (
                     <button onClick={() => setQuery("")}>
@@ -1205,22 +2168,6 @@ function App() {
                     </button>
                   )}
                 </div>
-              </section>
-
-              <section className="monitor-category-bar">
-                {categories.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.id}
-                      className={category === item.id ? "active" : ""}
-                      onClick={() => setCategory(item.id)}
-                    >
-                      <Icon size={13} />
-                      {item.label}
-                    </button>
-                  );
-                })}
               </section>
 
               <section className="monitor-events">
@@ -1285,7 +2232,7 @@ function App() {
                         <span className={classNames("monitor-duration", event.status)}>{event.duration}</span>
                         <span className={classNames("monitor-event-state", event.status)}>{statusIcon(event.status)}</span>
                       </button>
-                      {expanded && <ExpandedEvent event={event} onFavorite={toggleFavorite} />}
+                      {expanded && <ExpandedEvent event={event} />}
                     </article>
                   );
                 })}
@@ -1294,7 +2241,7 @@ function App() {
                   <div className="monitor-empty-state">
                     <Activity size={32} />
                     <strong>{workspace ? "当前筛选条件下暂无日志" : "暂无工作区数据"}</strong>
-                    <span>{workspace ? "尝试清空搜索框或重置分类筛选。" : "先在 WebMCP 中打开工作区以查看实时动态。"}</span>
+                    <span>{workspace ? "尝试清空搜索框或切换筛选状态。" : "先在 WebMCP 中打开工作区以查看实时动态。"}</span>
                   </div>
                 )}
                 {loading && !filteredEvents.length && isServiceOnline && (
@@ -1831,6 +2778,34 @@ function App() {
             </section>
           )}
 
+          {view === "skills" && (
+            <SkillsManagerView workspace={workspace} />
+          )}
+
+          {view === "roots" && (
+            <RootsManagerView
+              onSelectWorkspace={(id) => {
+                setSelectedWorkspaceId(id);
+                setView("logs");
+              }}
+              onRefreshWorkspaces={refresh}
+            />
+          )}
+
+          {view === "settings" && (
+            <SettingsAndCheckpointsView
+              workspace={workspace}
+              retentionDays={retentionDays}
+              storedEvents={storedEvents}
+              databasePath={databasePath}
+              databaseBytes={databaseBytes}
+              busy={settingsBusy}
+              onSave={saveSettings}
+              onCleanup={cleanup}
+              onClear={clear}
+            />
+          )}
+
           {view === "processes" && !workspace && (
             <div className="monitor-empty-state" style={{ height: "100%" }}>
               <TerminalSquare size={36} />
@@ -1840,20 +2815,6 @@ function App() {
           )}
         </main>
       </div>
-
-      {settingsOpen && (
-        <SettingsDialog
-          retentionDays={retentionDays}
-          storedEvents={storedEvents}
-          databasePath={databasePath}
-          databaseBytes={databaseBytes}
-          busy={settingsBusy}
-          onClose={() => setSettingsOpen(false)}
-          onSave={saveSettings}
-          onCleanup={cleanup}
-          onClear={clear}
-        />
-      )}
 
       {addWorkspaceOpen && (
         <AddWorkspaceDialog

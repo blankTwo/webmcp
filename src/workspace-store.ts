@@ -91,6 +91,7 @@ export interface WorkspaceStore {
   getSession(id: string): WorkspaceSession | undefined;
   listSessions(limit?: number): WorkspaceSession[];
   touchSession(id: string): void;
+  deleteSession(id: string): boolean;
   getConversationBinding(
     conversationScopeId: string,
     targetKey: string,
@@ -190,6 +191,14 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       .set({ lastUsedAt: new Date().toISOString() })
       .where(eq(workspaceSessions.id, id))
       .run();
+  }
+
+  deleteSession(id: string): boolean {
+    const result = this.database.db
+      .delete(workspaceSessions)
+      .where(eq(workspaceSessions.id, id))
+      .run();
+    return result.changes > 0;
   }
 
   getConversationBinding(

@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile as readTextFile, realpath } from "node:fs/promises";
 import { extname, join as joinPath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +45,7 @@ import { openAiConversationScopeId } from "./request-meta.js";
 import { moveWorkspacePath } from "./move-file.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 import { createHealthStatus, createRuntimeStatus } from "./runtime-status.js";
-import { formatPathForPrompt } from "./skills.js";
+import { applySkillToTarget, formatPathForPrompt, listAllSkillsInfo, removeSkillFromTarget } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
 import {
   buildWorkspaceContinuation,
@@ -54,6 +55,9 @@ import {
 } from "./workspace-memory.js";
 import { formatAgentsPath, WorkspaceRegistry, type Workspace } from "./workspaces.js";
 import { WEBMCP_VERSION } from "./version.js";
+import { expandHomePath, isPathInsideRoot } from "./roots.js";
+import { loadWebmcpFiles, webmcpConfigPath, writeWebmcpConfig } from "./user-config.js";
+import { resolve } from "node:path";
 import {
   bindConsoleEventStore,
   closeConsoleEventStore,
@@ -2559,6 +2563,157 @@ export function createServer(
     });
   });
 
+  app.get("/console/roots", (req, res) => {
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+
+    const allSessions = workspaceStore.listSessions(500);
+    const rootsInfo = config.allowedRoots.map((rootPath) => {
+      const isDrive = /^[a-zA-Z]:[\\/]?$/.test(rootPath);
+      const exists = existsSync(rootPath);
+      const wsCount = allSessions.filter((s) =>
+        process.platform === "win32"
+          ? s.root.toLowerCase().startsWith(rootPath.toLowerCase())
+          : s.root.startsWith(rootPath)
+      ).length;
+      return {
+        path: rootPath,
+        exists,
+        isDrive,
+        workspacesCount: wsCount,
+      };
+    });
+
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      ok: true,
+      allowedRoots: rootsInfo,
+      workspaces: allSessions,
+      configPath: webmcpConfigPath(),
+    });
+  });
+
+  app.post("/console/roots", express.json(), async (req, res) => {
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+
+    const rawPath = typeof req.body?.path === "string" ? req.body.path.trim() : "";
+    if (!rawPath) {
+      res.status(400).json({ ok: false, error: "path is required." });
+      return;
+    }
+
+    try {
+      const resolved = resolve(expandHomePath(rawPath));
+      const exists = existsSync(resolved);
+      if (!exists) {
+        res.status(400).json({ ok: false, error: `路径不存在: ${resolved}` });
+        return;
+      }
+
+      const alreadyCovered = config.allowedRoots.some((r) =>
+        isPathInsideRoot(resolved, r) ||
+        (process.platform === "win32" ? r.toLowerCase() === resolved.toLowerCase() : r === resolved)
+      );
+
+      if (!config.allowedRoots.some((r) =>
+        process.platform === "win32" ? r.toLowerCase() === resolved.toLowerCase() : r === resolved
+      )) {
+        config.allowedRoots.push(resolved);
+      }
+
+      // Persist to config.json
+      const userFiles = loadWebmcpFiles();
+      const roots = Array.isArray(userFiles.config.allowedRoots) ? [...userFiles.config.allowedRoots] : [];
+      if (!roots.some((r) =>
+        process.platform === "win32" ? r.toLowerCase() === resolved.toLowerCase() : r === resolved
+      )) {
+        roots.push(resolved);
+        writeWebmcpConfig({
+          ...userFiles.config,
+          allowedRoots: roots,
+        });
+      }
+
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        ok: true,
+        message: `目录 ${resolved} 已成功添加至白名单`,
+        allowedRoots: config.allowedRoots,
+      });
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/console/roots/remove", express.json(), (req, res) => {
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+
+    const rawPath = typeof req.body?.path === "string" ? req.body.path.trim() : "";
+    if (!rawPath) {
+      res.status(400).json({ ok: false, error: "path is required." });
+      return;
+    }
+
+    const resolved = resolve(expandHomePath(rawPath));
+    config.allowedRoots = config.allowedRoots.filter((r) =>
+      process.platform === "win32" ? r.toLowerCase() !== resolved.toLowerCase() : r !== resolved
+    );
+
+    // Persist to config.json
+    try {
+      const userFiles = loadWebmcpFiles();
+      const roots = (Array.isArray(userFiles.config.allowedRoots) ? userFiles.config.allowedRoots : [])
+        .filter((r) =>
+          process.platform === "win32" ? r.toLowerCase() !== resolved.toLowerCase() : r !== resolved
+        );
+      writeWebmcpConfig({
+        ...userFiles.config,
+        allowedRoots: roots,
+      });
+    } catch {
+      // Ignore file error
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      ok: true,
+      message: `目录 ${resolved} 已从白名单中移除`,
+      allowedRoots: config.allowedRoots,
+    });
+  });
+
+  app.post("/console/workspaces/remove", express.json(), (req, res) => {
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+
+    const workspaceId = typeof req.body?.workspaceId === "string" ? req.body.workspaceId.trim() : "";
+    if (!workspaceId) {
+      res.status(400).json({ ok: false, error: "workspaceId is required." });
+      return;
+    }
+
+    const ok = workspaces.removeWorkspaceSession(workspaceId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      ok,
+      message: ok ? "工作区会话已成功移除" : "未找到指定工作区会话",
+    });
+  });
+
   app.post("/console/workspaces", express.json(), async (req, res) => {
     const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
@@ -2574,6 +2729,29 @@ export function createServer(
 
     try {
       const canonicalPath = await realpath(requestedPath);
+      // Auto-add canonicalPath to config.allowedRoots in-memory and in ~/.webmcp/config.json
+      const isAllowed = config.allowedRoots.some((root) => isPathInsideRoot(canonicalPath, root));
+      if (!isAllowed) {
+        config.allowedRoots.push(canonicalPath);
+      }
+      try {
+        const userFiles = loadWebmcpFiles();
+        const roots = Array.isArray(userFiles.config.allowedRoots) ? [...userFiles.config.allowedRoots] : [];
+        const normalizedRoots = roots.map((r) => resolve(expandHomePath(r)));
+        const alreadyInFile = normalizedRoots.some((r) =>
+          isPathInsideRoot(canonicalPath, r)
+          || (process.platform === "win32" ? r.toLowerCase() === canonicalPath.toLowerCase() : r === canonicalPath)
+        );
+        if (!alreadyInFile) {
+          roots.push(canonicalPath);
+          writeWebmcpConfig({
+            ...userFiles.config,
+            allowedRoots: roots,
+          });
+        }
+      } catch {
+        // Ignore file write error if in restricted environment
+      }
       const existing = workspaceStore.listSessions(500).find((session) =>
         session.mode === "checkout"
         && (process.platform === "win32"
@@ -2756,6 +2934,75 @@ export function createServer(
       const cleared = await workspaces.clearResumeStateByRoot(workspaceRoot, mode);
       res.setHeader("Cache-Control", "no-store");
       res.json({ ok: true, cleared });
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get("/console/skills", (req, res) => {
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+
+    const workspaceRoot = typeof req.query.workspaceRoot === "string" ? req.query.workspaceRoot.trim() : undefined;
+    try {
+      const result = listAllSkillsInfo(config, workspaceRoot);
+      res.setHeader("Cache-Control", "no-store");
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/console/skills/apply", express.json(), (req, res) => {
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+
+    const { skillName, target, workspaceRoot } = req.body ?? {};
+    if (!skillName || typeof skillName !== "string") {
+      res.status(400).json({ ok: false, error: "skillName is required." });
+      return;
+    }
+    if (target !== "workspace" && target !== "global") {
+      res.status(400).json({ ok: false, error: "target must be 'workspace' or 'global'." });
+      return;
+    }
+
+    try {
+      const result = applySkillToTarget(skillName, target, workspaceRoot);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/console/skills/remove", express.json(), (req, res) => {
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+
+    const { skillName, target, workspaceRoot } = req.body ?? {};
+    if (!skillName || typeof skillName !== "string") {
+      res.status(400).json({ ok: false, error: "skillName is required." });
+      return;
+    }
+    if (target !== "workspace" && target !== "global") {
+      res.status(400).json({ ok: false, error: "target must be 'workspace' or 'global'." });
+      return;
+    }
+
+    try {
+      const result = removeSkillFromTarget(skillName, target, workspaceRoot);
+      res.setHeader("Cache-Control", "no-store");
+      res.json(result);
     } catch (error) {
       res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
     }
@@ -2989,6 +3236,20 @@ export function createServer(
   app.get("/mcp", rejectStatelessMcpMethod);
   app.delete("/mcp", rejectStatelessMcpMethod);
 
+  // Global JSON-aware Express error handler to prevent HTML error responses
+  app.use((err: unknown, req: Request, res: Response, _next: () => void) => {
+    logEvent(config.logging, "error", "unhandled_express_error", {
+      path: requestPath(req),
+      error: err instanceof Error ? err.message : String(err),
+    });
+    if (res.headersSent) return;
+    if (req.path === "/mcp" || req.path.startsWith("/mcp/")) {
+      sendJsonRpcError(res, 500, -32603, err instanceof Error ? err.message : "Internal server error");
+    } else {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Internal server error" });
+    }
+  });
+
   let closePromise: Promise<void> | undefined;
   return {
     app,
@@ -3044,7 +3305,7 @@ if (await isMainModule()) {
   };
   const handleShutdown = () => {
     void shutdown().catch((error) => {
-    console.error("webmcp shutdown failed", error);
+      console.error("webmcp shutdown failed", error);
       process.exit(1);
     });
   };

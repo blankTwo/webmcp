@@ -37,3 +37,56 @@ export interface LogEvent {
   consoleUi?: ConsoleToolUi;
   favorite?: boolean;
 }
+
+export interface WorkspaceCheckpointRecord {
+  id: string;
+  workspaceKey: string;
+  root: string;
+  mode: string;
+  state: {
+    goal: string;
+    currentTask: string;
+    completed?: string[];
+    decisions?: string[];
+    files?: string[];
+    verification?: string[];
+    blockers?: string[];
+    next?: string[];
+  };
+  facts: {
+    gitHead?: string;
+    gitBranch?: string;
+    gitClean?: boolean;
+  };
+  createdAt: string;
+}
+
+export interface SkillItemInfo {
+  name: string;
+  description: string;
+  version?: string;
+  source: "bundled" | "workspace" | "global";
+  baseDir: string;
+  filePath: string;
+  content: string;
+  appliedToWorkspace: boolean;
+  installedGlobally: boolean;
+}
+
+export interface AllowedRootInfo {
+  path: string;
+  exists: boolean;
+  isDrive: boolean;
+  workspacesCount: number;
+}
+
+export interface WorkspaceSessionInfo {
+  id: string;
+  root: string;
+  status: string;
+  mode: string;
+  managed: boolean;
+  createdAt: string;
+  lastUsedAt: string;
+}
+

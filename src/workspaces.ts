@@ -13,7 +13,7 @@ import type {
   WorkspaceResumeRecord,
   WorkspaceResumeState,
 } from "./workspace-memory.js";
-import { mkdir, opendir, readFile, realpath, stat } from "node:fs/promises";
+import { mkdir, opendir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import type { ServerConfig } from "./config.js";
@@ -83,6 +83,82 @@ export interface OpenWorkspaceInput {
 
 export interface OpenWorkspaceOptions {
   conversationScopeId?: string;
+}
+
+function formatCheckpointMarkdown(record: {
+  id: string;
+  createdAt: string;
+  root: string;
+  state: WorkspaceResumeState;
+  facts: WorkspaceMemoryFacts;
+}): string {
+  const { id, createdAt, root, state, facts } = record;
+  const lines: string[] = [
+    "# WebMCP Checkpoint",
+    "",
+    `- **ID**: \`${id}\``,
+    `- **Time**: ${createdAt}`,
+    `- **Workspace**: \`${root}\``,
+    ...(facts.gitBranch ? [`- **Git Branch**: \`${facts.gitBranch}\``] : []),
+    ...(facts.gitHead ? [`- **Git Commit**: \`${facts.gitHead}\``] : []),
+    "",
+    "## 🎯 Goal",
+    state.goal,
+    "",
+    "## ⚡ Current Task",
+    state.currentTask,
+    "",
+  ];
+
+  if (state.completed && state.completed.length > 0) {
+    lines.push("## ✅ Completed");
+    for (const item of state.completed) {
+      lines.push(`- ${item}`);
+    }
+    lines.push("");
+  }
+
+  if (state.decisions && state.decisions.length > 0) {
+    lines.push("## 💡 Decisions & Rationale");
+    for (const item of state.decisions) {
+      lines.push(`- ${item}`);
+    }
+    lines.push("");
+  }
+
+  if (state.files && state.files.length > 0) {
+    lines.push("## 📁 Key Files");
+    for (const item of state.files) {
+      lines.push(`- \`${item}\``);
+    }
+    lines.push("");
+  }
+
+  if (state.verification && state.verification.length > 0) {
+    lines.push("## 🧪 Verification & Checks");
+    for (const item of state.verification) {
+      lines.push(`- ${item}`);
+    }
+    lines.push("");
+  }
+
+  if (state.blockers && state.blockers.length > 0) {
+    lines.push("## ⚠️ Blockers & Risks");
+    for (const item of state.blockers) {
+      lines.push(`- ${item}`);
+    }
+    lines.push("");
+  }
+
+  if (state.next && state.next.length > 0) {
+    lines.push("## 🚀 Next Steps");
+    for (const item of state.next) {
+      lines.push(`- ${item}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
 }
 
 type PathStats = Stats;
@@ -300,6 +376,11 @@ export class WorkspaceRegistry {
     return restoredWorkspace;
   }
 
+  removeWorkspaceSession(workspaceId: string): boolean {
+    this.workspaces.delete(workspaceId);
+    return this.store?.deleteSession(workspaceId) ?? false;
+  }
+
   resolvePath(workspace: Workspace, inputPath: string): string {
     const absolutePath = resolveAllowedPath(inputPath, workspace.root, [workspace.root]);
     if (!isPathInsideRoot(absolutePath, workspace.root)) {
@@ -381,7 +462,7 @@ export class WorkspaceRegistry {
     if (!this.store) {
       throw new Error("Workspace persistence is unavailable; checkpoint cannot be saved.");
     }
-    return this.store.saveCheckpoint({
+    const record = this.store.saveCheckpoint({
       id: input.id,
       workspaceKey: await this.memoryKey(workspace),
       root: workspace.root,
@@ -390,6 +471,39 @@ export class WorkspaceRegistry {
       facts: input.facts,
       sourceConversationId: input.sourceConversationId,
     });
+
+    // Auto export checkpoint as JSON and Markdown files
+    try {
+      const checkpointsDir = join(workspace.root, ".webmcp", "checkpoints");
+      await mkdir(checkpointsDir, { recursive: true });
+      const safeTime = record.createdAt.replace(/[:.]/g, "-");
+      const filenameBase = `${safeTime}_${record.id.slice(0, 8)}`;
+
+      const mdContent = formatCheckpointMarkdown({
+        id: record.id,
+        createdAt: record.createdAt,
+        root: workspace.root,
+        state: record.state,
+        facts: record.facts,
+      });
+
+      const jsonContent = JSON.stringify(record, null, 2);
+
+      // 1. History snapshot files in .webmcp/checkpoints/
+      await writeFile(join(checkpointsDir, `${filenameBase}.md`), mdContent, "utf8");
+      await writeFile(join(checkpointsDir, `${filenameBase}.json`), jsonContent, "utf8");
+
+      // 2. Latest checkpoint in .webmcp/
+      await writeFile(join(workspace.root, ".webmcp", "checkpoint.md"), mdContent, "utf8");
+      await writeFile(join(workspace.root, ".webmcp", "checkpoint.json"), jsonContent, "utf8");
+
+      // 3. Root CHECKPOINT.md for easy repo visibility
+      await writeFile(join(workspace.root, "CHECKPOINT.md"), mdContent, "utf8");
+    } catch {
+      // Ignore file export failure in restricted environments
+    }
+
+    return record;
   }
 
   async searchCheckpoints(

@@ -268,16 +268,7 @@ fn ensure_default_config(project_root: &std::path::Path) -> Result<PathBuf, Stri
 
     let config_file = config_dir.join("config.json");
     if !config_file.is_file() {
-        let mut allowed_roots = vec![project_root.to_string_lossy().to_string()];
-        #[cfg(windows)]
-        {
-            for letter in b'C'..=b'Z' {
-                let drive_str = format!("{}:\\", letter as char);
-                if std::path::Path::new(&drive_str).exists() && !allowed_roots.contains(&drive_str) {
-                    allowed_roots.push(drive_str);
-                }
-            }
-        }
+        let allowed_roots = vec![project_root.to_string_lossy().to_string()];
         let default_config = serde_json::json!({
             "host": "127.0.0.1",
             "port": 7676,
@@ -852,10 +843,25 @@ async fn proxy_webmcp_api(method: String, path: String, body: Option<Value>) -> 
         .request(method, format!("{LOCAL_BASE_URL}{path}"))
         .header("x-webmcp-owner-token", owner_token()?);
     if let Some(body) = body { request = request.json(&body); }
-    let response = request.send().await.map_err(|error| format!("WebMCP request failed: {error}"))?;
+    let response = request.send().await.map_err(|error| format!("连接 WebMCP 后台服务失败 (服务可能未启动): {error}"))?;
     let status = response.status();
-    let payload: Value = response.json().await.map_err(|error| format!("WebMCP returned invalid JSON: {error}"))?;
-    if !status.is_success() { return Err(format!("WebMCP returned HTTP {status}: {payload}")); }
+    let text = response.text().await.map_err(|error| format!("读取 WebMCP 响应内容失败: {error}"))?;
+    let payload: Value = serde_json::from_str(&text).map_err(|_| {
+        if text.contains("<html") || text.contains("<!DOCTYPE") || text.contains("<title>") {
+            format!("WebMCP 服务返回了 HTML 错误页 (HTTP {status})，请在客户端点击「重启服务」")
+        } else if text.trim().is_empty() {
+            format!("WebMCP 服务返回了空响应 (HTTP {status})，请检查服务运行状态")
+        } else {
+            format!("WebMCP 服务返回了非 JSON 格式响应 (HTTP {status}): {text}")
+        }
+    })?;
+    if !status.is_success() {
+        let err_msg = payload.get("error").and_then(Value::as_str).unwrap_or("");
+        if !err_msg.is_empty() {
+            return Err(err_msg.to_string());
+        }
+        return Err(format!("WebMCP 返回错误 (HTTP {status}): {payload}"));
+    }
     Ok(payload)
 }
 
@@ -1158,6 +1164,67 @@ async fn set_webmcp_public_url(url: Option<String>) -> Result<WebmcpConfigInfo, 
     get_webmcp_config().await
 }
 
+#[tauri::command]
+async fn save_webmcp_allowed_roots(roots: Vec<String>) -> Result<WebmcpConfigInfo, String> {
+    let dir = if let Ok(Some(existing)) = active_config_dir() {
+        existing
+    } else {
+        let home = env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| "无法解析用户主目录".to_string())?;
+        let config_dir = home.join(".webmcp");
+        let _ = fs::create_dir_all(&config_dir);
+        config_dir
+    };
+
+    let config_file = dir.join("config.json");
+    let mut config_val: Value = if config_file.is_file() {
+        fs::read_to_string(&config_file)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({
+            "host": "127.0.0.1",
+            "port": 7676,
+            "artifactsEnabled": true
+        })
+    };
+
+    config_val["allowedRoots"] = serde_json::json!(roots);
+    let _ = fs::write(&config_file, serde_json::to_string_pretty(&config_val).unwrap_or_default());
+
+    get_webmcp_config().await
+}
+
+#[tauri::command]
+async fn select_folder_dialog() -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                r#"[System.Reflection.Assembly]::LoadWithPartialName("System.windows.forms") | Out-Null; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = "选择要授权给 ChatGPT 的工作区目录"; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }"#,
+            ])
+            .output()
+            .map_err(|e| format!("打开文件夹选择框失败: {e}"))?;
+
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                return Ok(Some(path_str));
+            }
+        }
+        Ok(None)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(None)
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -1176,7 +1243,9 @@ pub fn run() {
             get_workspace_git_diff,
             revert_workspace_file,
             get_webmcp_config,
-            set_webmcp_public_url
+            set_webmcp_public_url,
+            save_webmcp_allowed_roots,
+            select_folder_dialog
         ])
         .run(tauri::generate_context!())
         .expect("error while running WebMCP Console");
