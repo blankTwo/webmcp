@@ -7,6 +7,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tauri::Manager;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -1225,6 +1226,60 @@ async fn select_folder_dialog() -> Result<Option<String>, String> {
     }
 }
 
+#[tauri::command]
+async fn toggle_float_ball(app_handle: tauri::AppHandle, show: bool) -> Result<bool, String> {
+    if let Some(w) = app_handle.get_webview_window("float-ball") {
+        if show {
+            let _ = w.show();
+            let _ = w.set_focus();
+            Ok(true)
+        } else {
+            let _ = w.hide();
+            Ok(false)
+        }
+    } else if show {
+        let builder = tauri::WebviewWindowBuilder::new(
+            &app_handle,
+            "float-ball",
+            tauri::WebviewUrl::App("index.html?window=float-ball".into()),
+        )
+        .title("WebMCP Telemetry Ball")
+        .inner_size(240.0, 240.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false);
+
+        let window = builder.build().map_err(|e| e.to_string())?;
+        let _ = window.show();
+        let _ = window.set_focus();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+async fn is_float_ball_visible(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    if let Some(w) = app_handle.get_webview_window("float-ball") {
+        w.is_visible().map_err(|e| e.to_string())
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+async fn show_main_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app_handle.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -1245,7 +1300,10 @@ pub fn run() {
             get_webmcp_config,
             set_webmcp_public_url,
             save_webmcp_allowed_roots,
-            select_folder_dialog
+            select_folder_dialog,
+            toggle_float_ball,
+            is_float_ball_visible,
+            show_main_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running WebMCP Console");

@@ -1,13 +1,20 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Core window permissions for the WebMCP Console main window.",
-  "windows": ["main"],
+  "description": "Core window permissions for the WebMCP Console main window and floating widgets.",
+  "windows": ["*"],
   "permissions": [
     "core:default",
     "core:window:allow-close",
     "core:window:allow-minimize",
+    "core:window:allow-unminimize",
     "core:window:allow-toggle-maximize",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-always-on-top"
   ]
 }

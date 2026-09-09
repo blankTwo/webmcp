@@ -1006,8 +1006,12 @@ interface TelemetryHistoryPoint {
 
 function OptimizerTelemetryGraphic({
   optimizer,
+  floatBallActive,
+  onToggleFloatBall,
 }: {
   optimizer: OptimizerStatus | null;
+  floatBallActive?: boolean;
+  onToggleFloatBall?: () => void;
 }) {
   const [history, setHistory] = useState<TelemetryHistoryPoint[]>([]);
   const [showRawJson, setShowRawJson] = useState(false);
@@ -1087,6 +1091,16 @@ function OptimizerTelemetryGraphic({
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {onToggleFloatBall && (
+            <button
+              className={classNames("monitor-service-quick-btn monitor-btn-compact", floatBallActive && "primary")}
+              onClick={onToggleFloatBall}
+              title={floatBallActive ? "隐藏桌面悬浮球" : "在桌面打开置顶透明悬浮球"}
+            >
+              <CircleDot size={13} color={floatBallActive ? "var(--monitor-green)" : "currentColor"} />
+              <span>{floatBallActive ? "桌面悬浮球 (开启)" : "开启桌面悬浮球"}</span>
+            </button>
+          )}
           <button
             className={classNames("monitor-service-quick-btn monitor-btn-compact", !showRawJson && "primary")}
             onClick={() => setShowRawJson(false)}
@@ -1850,6 +1864,25 @@ function App() {
   const [domainFeedback, setDomainFeedback] = useState<string | null>(null);
   const [showDomainEditor, setShowDomainEditor] = useState(false);
 
+  // Desktop Floating Ball state
+  const [floatBallActive, setFloatBallActive] = useState(false);
+
+  useEffect(() => {
+    invoke<boolean>("is_float_ball_visible")
+      .then((vis) => setFloatBallActive(Boolean(vis)))
+      .catch(() => undefined);
+  }, []);
+
+  const handleToggleFloatBall = async () => {
+    try {
+      const next = !floatBallActive;
+      const res = await invoke<boolean>("toggle_float_ball", { show: next });
+      setFloatBallActive(Boolean(res));
+    } catch (err) {
+      console.error("Toggle float ball failed:", err);
+    }
+  };
+
   // Project Root & Drive selection states
   const [projectPathInfo, setProjectPathInfo] = useState<ProjectPathInfo | null>(null);
   const [customPathInput, setCustomPathInput] = useState<string>("");
@@ -2266,6 +2299,25 @@ function App() {
         </div>
         <div className="monitor-window-actions">
           <button
+            className={classNames("monitor-floatball-toggle-btn", floatBallActive && "active")}
+            title={floatBallActive ? "隐藏桌面悬浮球" : "开启桌面悬浮球 (实时并发与缓存监控)"}
+            onClick={() => void handleToggleFloatBall()}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "0 10px",
+              width: "auto",
+              borderRadius: 6,
+              background: floatBallActive ? "var(--monitor-green-soft)" : "transparent",
+              color: floatBallActive ? "var(--monitor-green)" : "var(--monitor-text-soft)",
+              border: floatBallActive ? "1px solid rgba(34, 197, 94, 0.3)" : "1px solid transparent"
+            }}
+          >
+            <CircleDot size={13} color={floatBallActive ? "var(--monitor-green)" : "currentColor"} />
+            <span style={{ fontSize: 11.5, fontWeight: 500 }}>{floatBallActive ? "悬浮球已开" : "桌面悬浮球"}</span>
+          </button>
+          <button
             title={theme === "light" ? "切换深色主题" : "切换浅色主题"}
             onClick={() => setTheme(theme === "light" ? "dark" : "light")}
           >
@@ -2642,7 +2694,11 @@ function App() {
                 <Metric label="缓存写入数" value={optimizer?.cache.writes ?? 0} note="累积写入次数" />
               </div>
 
-              <OptimizerTelemetryGraphic optimizer={optimizer} />
+              <OptimizerTelemetryGraphic
+                optimizer={optimizer}
+                floatBallActive={floatBallActive}
+                onToggleFloatBall={handleToggleFloatBall}
+              />
             </section>
           )}
 
