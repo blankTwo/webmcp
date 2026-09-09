@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Activity,
   AlertTriangle,
+  BarChart2,
   BookmarkCheck,
   Check,
   CheckCircle2,
@@ -992,6 +993,360 @@ function SkillsManagerView({
   );
 }
 
+
+interface TelemetryHistoryPoint {
+  time: string;
+  active: number;
+  limit: number;
+  hitRate: number;
+  hits: number;
+  misses: number;
+  size: number;
+}
+
+function OptimizerTelemetryGraphic({
+  optimizer,
+}: {
+  optimizer: OptimizerStatus | null;
+}) {
+  const [history, setHistory] = useState<TelemetryHistoryPoint[]>([]);
+  const [showRawJson, setShowRawJson] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!optimizer) return;
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}`;
+    const hits = optimizer.cache.hits ?? 0;
+    const misses = optimizer.cache.misses ?? 0;
+    const total = hits + misses;
+    const hitRate = total > 0 ? Math.round((hits / total) * 100) : 0;
+    const active = optimizer.concurrent.active ?? 0;
+    const limit = optimizer.concurrent.limit ?? 4;
+    const size = optimizer.cache.size ?? 0;
+
+    setHistory((prev) => {
+      const next = [...prev, { time: timeStr, active, limit, hitRate, hits, misses, size }];
+      return next.length > 20 ? next.slice(next.length - 20) : next;
+    });
+  }, [optimizer]);
+
+  const hits = optimizer?.cache.hits ?? 0;
+  const misses = optimizer?.cache.misses ?? 0;
+  const cacheHitTotal = hits + misses;
+  const cacheHitRate = cacheHitTotal > 0 ? Math.round((hits / cacheHitTotal) * 100) : 0;
+  const activeConcurrent = optimizer?.concurrent.active ?? 0;
+  const limitConcurrent = optimizer?.concurrent.limit ?? 4;
+  const concurrentUsage = limitConcurrent > 0 ? Math.round((activeConcurrent / limitConcurrent) * 100) : 0;
+  const cacheSize = optimizer?.cache.size ?? 0;
+  const cacheWrites = optimizer?.cache.writes ?? 0;
+
+  // Circular gauge calculations (R=36, circumference ~ 226.19)
+  const radius = 36;
+  const circumference = 2 * Math.PI * radius;
+  const gaugeOffset = circumference - (Math.min(100, Math.max(0, concurrentUsage)) / 100) * circumference;
+
+  const handleCopyJson = () => {
+    void navigator.clipboard.writeText(JSON.stringify(optimizer ?? {}, null, 2));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // SVG Trend Chart Data Calculation
+  const maxLimit = Math.max(limitConcurrent, ...history.map((h) => h.active), 1);
+  const chartW = 700;
+  const chartH = 110;
+  const padLeft = 36;
+  const padRight = 36;
+  const padTop = 15;
+  const padBottom = 25;
+  const innerW = chartW - padLeft - padRight;
+  const innerH = chartH - padTop - padBottom;
+
+  const pointsCount = Math.max(history.length, 2);
+  const getX = (idx: number) => padLeft + (idx / (pointsCount - 1)) * innerW;
+  const getYActive = (val: number) => padTop + innerH - (Math.min(val, maxLimit) / maxLimit) * innerH;
+  const getYHitRate = (rate: number) => padTop + innerH - (Math.min(rate, 100) / 100) * innerH;
+
+  const activePointsStr = history.map((pt, i) => `${getX(i)},${getYActive(pt.active)}`).join(" ");
+  const activeAreaPath = history.length > 0
+    ? `M ${getX(0)},${padTop + innerH} L ${history.map((pt, i) => `${getX(i)},${getYActive(pt.active)}`).join(" L ")} L ${getX(history.length - 1)},${padTop + innerH} Z`
+    : "";
+
+  const hitRatePointsStr = history.map((pt, i) => `${getX(i)},${getYHitRate(pt.hitRate)}`).join(" ");
+
+  return (
+    <div className="monitor-info-panel" style={{ overflow: "hidden" }}>
+      <header className="monitor-card-header-clean">
+        <div className="monitor-card-header-title">
+          <Gauge size={17} color="var(--monitor-blue)" />
+          <strong>实时遥测状态看板 (Real-time Telemetry)</strong>
+          <span className="monitor-pulse-badge">
+            <span className="pulse-dot"></span>
+            实时监控中 (4s)
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            className={classNames("monitor-service-quick-btn monitor-btn-compact", !showRawJson && "primary")}
+            onClick={() => setShowRawJson(false)}
+            title="图形化视图"
+          >
+            <BarChart2 size={13} />
+            <span>图形视图</span>
+          </button>
+          <button
+            className={classNames("monitor-service-quick-btn monitor-btn-compact", showRawJson && "primary")}
+            onClick={() => setShowRawJson(true)}
+            title="原始 JSON 报文"
+          >
+            <Code2 size={13} />
+            <span>原始 JSON</span>
+          </button>
+        </div>
+      </header>
+
+      {showRawJson ? (
+        <div style={{ padding: 18 }}>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+            <button
+              className="monitor-service-quick-btn monitor-btn-compact"
+              onClick={handleCopyJson}
+            >
+              <Copy size={13} />
+              <span>{copied ? "已复制 JSON" : "复制 JSON"}</span>
+            </button>
+          </div>
+          <pre className="monitor-raw-json-view">{JSON.stringify(optimizer ?? { status: "waiting_for_response" }, null, 2)}</pre>
+        </div>
+      ) : (
+        <div className="monitor-telemetry-container">
+          {/* Row 1: Dual Cards */}
+          <div className="monitor-telemetry-grid">
+            {/* Card 1: Concurrency Gauge & Slot Matrix */}
+            <div className="monitor-telemetry-card">
+              <div className="monitor-telemetry-card-title">
+                <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <Zap size={15} color="var(--monitor-blue)" />
+                  并发调度负载与 Worker 槽位
+                </span>
+                {activeConcurrent === 0 ? (
+                  <span className="monitor-tag-badge workspace"><Check size={11} /> 空闲就绪</span>
+                ) : activeConcurrent < limitConcurrent ? (
+                  <span className="monitor-tag-badge" style={{ background: "var(--monitor-blue-soft)", color: "var(--monitor-blue)" }}>
+                    <Activity size={11} /> 调度正常
+                  </span>
+                ) : (
+                  <span className="monitor-tag-badge" style={{ background: "rgba(245, 158, 11, 0.15)", color: "#d97706" }}>
+                    <AlertTriangle size={11} /> 槽位饱和
+                  </span>
+                )}
+              </div>
+
+              <div className="monitor-gauge-row">
+                <div className="monitor-gauge-svg-box">
+                  <svg width="90" height="90" viewBox="0 0 90 90">
+                    <circle
+                      cx="45"
+                      cy="45"
+                      r={radius}
+                      fill="transparent"
+                      stroke="var(--monitor-panel-hover)"
+                      strokeWidth="7"
+                    />
+                    <circle
+                      cx="45"
+                      cy="45"
+                      r={radius}
+                      fill="transparent"
+                      stroke="url(#concurrency-grad)"
+                      strokeWidth="7"
+                      strokeDasharray={circumference}
+                      strokeDashoffset={gaugeOffset}
+                      strokeLinecap="round"
+                      transform="rotate(-90 45 45)"
+                      style={{ transition: "stroke-dashoffset 0.4s ease" }}
+                    />
+                    <defs>
+                      <linearGradient id="concurrency-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stopColor="#3b82f6" />
+                        <stop offset="100%" stopColor="#8b5cf6" />
+                      </linearGradient>
+                    </defs>
+                  </svg>
+                  <div className="monitor-gauge-center-text">
+                    <strong>{activeConcurrent}/{limitConcurrent}</strong>
+                    <small>{concurrentUsage}%</small>
+                  </div>
+                </div>
+
+                <div className="monitor-slots-col">
+                  <span style={{ fontSize: 11, color: "var(--monitor-muted)", fontWeight: 500 }}>
+                    处理线程 Worker 槽位分配:
+                  </span>
+                  <div className="monitor-slots-grid">
+                    {Array.from({ length: Math.max(limitConcurrent, 1) }).map((_, i) => {
+                      const isActive = i < activeConcurrent;
+                      return (
+                        <div key={i} className={classNames("monitor-slot-box", isActive && "active")}>
+                          {isActive ? <Zap size={12} /> : <CircleDot size={12} />}
+                          <span>槽位 #{i + 1} {isActive ? "处理中" : "待命中"}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Card 2: Cache Efficiency & Breakdown */}
+            <div className="monitor-telemetry-card">
+              <div className="monitor-telemetry-card-title">
+                <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <Database size={15} color="#10b981" />
+                  MCP 请求缓存效率与分流
+                </span>
+                <span className="monitor-tag-badge" style={{ background: "rgba(16, 185, 129, 0.12)", color: "#10b981" }}>
+                  命中率 {cacheHitRate}%
+                </span>
+              </div>
+
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: "var(--monitor-text-soft)", marginBottom: 6 }}>
+                  <span>命中: {hits} 次 ({cacheHitRate}%)</span>
+                  <span>穿透: {misses} 次 ({cacheHitTotal > 0 ? 100 - cacheHitRate : 0}%)</span>
+                </div>
+                <div className="monitor-cache-split-bar">
+                  <div className="monitor-cache-split-fill hits" style={{ width: `${cacheHitRate}%` }} />
+                  <div className="monitor-cache-split-fill misses" style={{ width: `${cacheHitTotal > 0 ? 100 - cacheHitRate : 0}%` }} />
+                </div>
+              </div>
+
+              <div className="monitor-stat-mini-grid">
+                <div className="monitor-stat-mini-item">
+                  <span>缓存命中</span>
+                  <strong style={{ color: "#10b981" }}>{hits}</strong>
+                </div>
+                <div className="monitor-stat-mini-item">
+                  <span>穿透回源</span>
+                  <strong style={{ color: "#f59e0b" }}>{misses}</strong>
+                </div>
+                <div className="monitor-stat-mini-item">
+                  <span>内存活跃条目</span>
+                  <strong>{cacheSize}</strong>
+                </div>
+                <div className="monitor-stat-mini-item">
+                  <span>累积写入</span>
+                  <strong>{cacheWrites}</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2: Real-time Trend SVG Graph */}
+          <div className="monitor-telemetry-chart-card">
+            <div className="monitor-chart-header-row">
+              <div>
+                <strong style={{ fontSize: 13, color: "var(--monitor-text)" }}>📈 实时吞吐与命中时序趋势</strong>
+                <span style={{ fontSize: 11.5, color: "var(--monitor-muted)", marginLeft: 8 }}>
+                  最近 {history.length} 个采样周期 (更新中)
+                </span>
+              </div>
+              <div className="monitor-chart-legend">
+                <div className="monitor-legend-item">
+                  <span className="monitor-legend-dot concurrency" />
+                  <span>并发请求 (0 ~ {maxLimit})</span>
+                </div>
+                <div className="monitor-legend-item">
+                  <span className="monitor-legend-dot cache" />
+                  <span>缓存命中率 (0 ~ 100%)</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="monitor-svg-chart-wrapper">
+              <svg width="100%" height="100%" viewBox={`0 0 ${chartW} ${chartH}`} preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="area-blue" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
+                    <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.0" />
+                  </linearGradient>
+                </defs>
+
+                {/* Grid Lines */}
+                <line x1={padLeft} y1={padTop} x2={chartW - padRight} y2={padTop} stroke="var(--monitor-line)" strokeDasharray="3 3" />
+                <line x1={padLeft} y1={padTop + innerH / 2} x2={chartW - padRight} y2={padTop + innerH / 2} stroke="var(--monitor-line)" strokeDasharray="3 3" />
+                <line x1={padLeft} y1={padTop + innerH} x2={chartW - padRight} y2={padTop + innerH} stroke="var(--monitor-line)" />
+
+                {/* Y-Axis labels */}
+                <text x={padLeft - 6} y={padTop + 4} textAnchor="end" fontSize="9" fill="var(--monitor-muted)">{maxLimit}</text>
+                <text x={padLeft - 6} y={padTop + innerH / 2 + 3} textAnchor="end" fontSize="9" fill="var(--monitor-muted)">{Math.round(maxLimit / 2)}</text>
+                <text x={padLeft - 6} y={padTop + innerH} textAnchor="end" fontSize="9" fill="var(--monitor-muted)">0</text>
+
+                {/* Right Y-Axis (100% Hit Rate) */}
+                <text x={chartW - padRight + 4} y={padTop + 4} textAnchor="start" fontSize="9" fill="#10b981">100%</text>
+                <text x={chartW - padRight + 4} y={padTop + innerH} textAnchor="start" fontSize="9" fill="#10b981">0%</text>
+
+                {history.length > 1 && (
+                  <>
+                    {/* Active Concurrency Area & Line */}
+                    <path d={activeAreaPath} fill="url(#area-blue)" />
+                    <polyline
+                      fill="none"
+                      stroke="#3b82f6"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      points={activePointsStr}
+                    />
+
+                    {/* Cache Hit Rate Line */}
+                    <polyline
+                      fill="none"
+                      stroke="#10b981"
+                      strokeWidth="2"
+                      strokeDasharray="4 3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      points={hitRatePointsStr}
+                    />
+
+                    {/* Dots for Concurrency */}
+                    {history.map((pt, i) => (
+                      <circle
+                        key={`c-${i}`}
+                        cx={getX(i)}
+                        cy={getYActive(pt.active)}
+                        r="3.5"
+                        fill="#3b82f6"
+                        stroke="#ffffff"
+                        strokeWidth="1.5"
+                      />
+                    ))}
+                  </>
+                )}
+
+                {/* X-Axis time labels */}
+                {history.length > 0 && (
+                  <>
+                    <text x={padLeft} y={chartH - 4} textAnchor="start" fontSize="9" fill="var(--monitor-muted)">
+                      {history[0].time}
+                    </text>
+                    {history.length > 1 && (
+                      <text x={chartW - padRight} y={chartH - 4} textAnchor="end" fontSize="9" fill="var(--monitor-muted)">
+                        {history[history.length - 1].time} (最新)
+                      </text>
+                    )}
+                  </>
+                )}
+              </svg>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function normalizeDisplayPath(p: string): string {
   if (!p) return "";
@@ -2287,14 +2642,7 @@ function App() {
                 <Metric label="缓存写入数" value={optimizer?.cache.writes ?? 0} note="累积写入次数" />
               </div>
 
-              <div className="monitor-info-panel">
-                <header>
-                  <Gauge size={16} color="var(--monitor-blue)" />
-                  <strong>实时遥测状态快照</strong>
-                  <span>每 4 秒自动刷新</span>
-                </header>
-                <pre>{JSON.stringify(optimizer ?? { status: "waiting_for_response" }, null, 2)}</pre>
-              </div>
+              <OptimizerTelemetryGraphic optimizer={optimizer} />
             </section>
           )}
 

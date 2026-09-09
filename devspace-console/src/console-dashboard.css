@@ -3097,6 +3097,271 @@ button {
   white-space: normal;
 }
 
+/* ==========================================================================
+   Telemetry Graphical Dashboard Styles
+   ========================================================================== */
+
+.monitor-telemetry-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+}
+
+.monitor-pulse-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--monitor-green);
+  background: var(--monitor-green-soft);
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--monitor-green);
+  box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+  animation: pulse-ring 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+.monitor-telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.monitor-telemetry-card {
+  padding: 18px 20px;
+  background: var(--monitor-panel-soft);
+  border: 1px solid var(--monitor-line);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.monitor-telemetry-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--monitor-text);
+}
+
+.monitor-gauge-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.monitor-gauge-svg-box {
+  position: relative;
+  width: 90px;
+  height: 90px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.monitor-gauge-center-text {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.monitor-gauge-center-text strong {
+  font-size: 16px;
+  font-weight: 800;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--monitor-text);
+  line-height: 1.1;
+}
+
+.monitor-gauge-center-text small {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--monitor-text-soft);
+}
+
+.monitor-slots-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.monitor-slots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 6px;
+}
+
+.monitor-slot-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border: 1px solid var(--monitor-line);
+  background: var(--monitor-panel);
+  color: var(--monitor-text-soft);
+  transition: all 0.2s ease;
+}
+
+.monitor-slot-box.active {
+  background: var(--monitor-blue-soft);
+  border-color: rgba(59, 130, 246, 0.35);
+  color: var(--monitor-blue);
+  font-weight: 600;
+}
+
+.monitor-cache-split-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--monitor-panel-hover);
+  border: 1px solid var(--monitor-line);
+}
+
+.monitor-cache-split-fill.hits {
+  background: linear-gradient(90deg, #10b981, #059669);
+  transition: width 0.3s ease;
+}
+
+.monitor-cache-split-fill.misses {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+  transition: width 0.3s ease;
+}
+
+.monitor-stat-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.monitor-stat-mini-item {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--monitor-panel);
+  border: 1px solid var(--monitor-line);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.monitor-stat-mini-item span {
+  font-size: 10px;
+  color: var(--monitor-muted);
+  font-weight: 500;
+}
+
+.monitor-stat-mini-item strong {
+  font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--monitor-text);
+  font-weight: 700;
+}
+
+.monitor-telemetry-chart-card {
+  padding: 20px;
+  background: var(--monitor-panel-soft);
+  border: 1px solid var(--monitor-line);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.monitor-chart-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.monitor-chart-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 11.5px;
+  color: var(--monitor-text-soft);
+}
+
+.monitor-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.monitor-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.monitor-legend-dot.concurrency {
+  background: #3b82f6;
+}
+
+.monitor-legend-dot.cache {
+  background: #10b981;
+}
+
+.monitor-svg-chart-wrapper {
+  width: 100%;
+  height: 140px;
+  background: var(--monitor-panel);
+  border: 1px solid var(--monitor-line);
+  border-radius: 8px;
+  overflow: hidden;
+  padding: 6px 10px 10px;
+  box-sizing: border-box;
+}
+
+.monitor-raw-json-view {
+  margin: 0;
+  padding: 16px 20px;
+  background: var(--monitor-terminal-bg);
+  color: var(--monitor-terminal-text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  border-radius: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+
 
 
 
