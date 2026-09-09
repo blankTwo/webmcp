@@ -156,7 +156,7 @@ export class McpRequestOptimizer {
 export class ConcurrentRequestLimiter {
   private activeRequests = 0;
 
-  constructor(private readonly maxConcurrent = 50) {}
+  constructor(private readonly maxConcurrent = 6) {}
 
   tryAcquire(): (() => void) | undefined {
     if (this.activeRequests >= this.maxConcurrent) return undefined;

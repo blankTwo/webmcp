@@ -1026,7 +1026,7 @@ function OptimizerTelemetryGraphic({
     const total = hits + misses;
     const hitRate = total > 0 ? Math.round((hits / total) * 100) : 0;
     const active = optimizer.concurrent.active ?? 0;
-    const limit = optimizer.concurrent.limit ?? 4;
+    const limit = optimizer.concurrent.limit ?? 6;
     const size = optimizer.cache.size ?? 0;
 
     setHistory((prev) => {
@@ -1040,7 +1040,7 @@ function OptimizerTelemetryGraphic({
   const cacheHitTotal = hits + misses;
   const cacheHitRate = cacheHitTotal > 0 ? Math.round((hits / cacheHitTotal) * 100) : 0;
   const activeConcurrent = optimizer?.concurrent.active ?? 0;
-  const limitConcurrent = optimizer?.concurrent.limit ?? 4;
+  const limitConcurrent = optimizer?.concurrent.limit ?? 6;
   const concurrentUsage = limitConcurrent > 0 ? Math.round((activeConcurrent / limitConcurrent) * 100) : 0;
   const cacheSize = optimizer?.cache.size ?? 0;
   const cacheWrites = optimizer?.cache.writes ?? 0;
