@@ -385,9 +385,9 @@ async fn get_client_status() -> Result<ClientStatus, String> {
 
 #[tauri::command]
 async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
-    push_service_log("收到启动 GPTMCP 服务请求...");
+    push_service_log("🚀 收到启动 GPTMCP 服务请求...");
     if check_health().await {
-        push_service_log("服务已在 127.0.0.1:7676 正常运行。");
+        push_service_log("ℹ️ 服务当前已在 127.0.0.1:7676 处于运行状态。");
         return Ok(ServiceControlResult {
             ok: true,
             message: "服务已处于运行中状态".to_string(),
@@ -396,7 +396,7 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
 
     let project_root = match resolve_project_root() {
         Some(p) => {
-            push_service_log(format!("解析项目根目录: {}", p.display()));
+            push_service_log(format!("📁 解析项目根目录: {}", p.display()));
             p
         }
         None => {
@@ -407,13 +407,13 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
     };
 
     // 1. Ensure default configuration files (~/.gptmcp/config.json & auth.json) exist
-    push_service_log("检查并同步默认配置文件 (~/.gptmcp/config.json)...");
+    push_service_log("⚙️ 检查配置文件: ~/.gptmcp/config.json 就绪");
     let _ = ensure_default_config(&project_root);
 
     // 2. Automatically build dist/cli.js if missing
     let cli_path = project_root.join("dist").join("cli.js");
     if !cli_path.is_file() {
-        push_service_log("未检测到 dist/cli.js，开始执行自动构建: npm run build...");
+        push_service_log("📦 未检测到 dist/cli.js，开始自动编译源码 (npm run build)...");
         #[cfg(windows)]
         let mut build_cmd = {
             let mut cmd = std::process::Command::new("cmd");
@@ -442,19 +442,19 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
         if let Some(stdout) = build_child.stdout.take() {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
-                push_service_log(format!("[构建] {line}"));
+                push_service_log(format!("📦 [构建] {line}"));
             }
         }
         if let Some(stderr) = build_child.stderr.take() {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
-                push_service_log(format!("[构建输出] {line}"));
+                push_service_log(format!("⚠️ [构建输出] {line}"));
             }
         }
 
         match build_child.wait() {
             Ok(status) if status.success() => {
-                push_service_log("✅ npm run build 自动构建成功！");
+                push_service_log("✅ npm run build 编译成功！");
             }
             Ok(status) => {
                 let msg = format!(
@@ -476,9 +476,11 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
             push_service_log(format!("❌ {msg}"));
             return Err(msg);
         }
+    } else {
+        push_service_log("📦 检测核心程序: dist/cli.js 就绪");
     }
 
-    push_service_log(format!("启动后台进程: node {} serve", cli_path.display()));
+    push_service_log(format!("⚡ 启动后台服务进程: node dist/cli.js serve"));
     let mut cmd = std::process::Command::new("node");
     cmd.arg(&cli_path).arg("serve");
     cmd.current_dir(&project_root);
@@ -503,7 +505,10 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
-                push_service_log(format!("[核心服务] {line}"));
+                // Only capture key startup messages, avoid dumping runtime RPC/tool request logs
+                if line.contains("listening on") || line.contains("public base url") || line.contains("allowed roots") {
+                    push_service_log(format!("🌐 [服务] {line}"));
+                }
             }
         });
     }
@@ -512,13 +517,15 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
-                push_service_log(format!("[核心服务异常] {line}"));
+                if !line.trim().is_empty() {
+                    push_service_log(format!("⚠️ [服务异常] {line}"));
+                }
             }
         });
     }
 
     let pid = child.id();
-    push_service_log(format!("后台进程已创建 (PID: {pid})，正在等待 127.0.0.1:7676 健康检查响应..."));
+    push_service_log(format!("⚡ 后台进程已创建 (PID: {pid})，正在探测 127.0.0.1:7676 响应..."));
 
     if let Ok(mut guard) = MANAGED_CHILD.lock() {
         *guard = Some(child);
@@ -528,7 +535,7 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
     for i in 1..=16 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         if check_health().await {
-            push_service_log(format!("✅ 健康检查通过！GPTMCP 核心服务已在 7676 端口就绪 (耗时约 {:.1}s)", (i as f32) * 0.5));
+            push_service_log(format!("✅ 健康检查通过！GPTMCP 核心服务已在 7676 端口正常运行 (耗时约 {:.1}s)", (i as f32) * 0.5));
             return Ok(ServiceControlResult {
                 ok: true,
                 message: "GPTMCP 服务已成功启动并在 7676 端口运行".to_string(),
@@ -536,25 +543,25 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
         }
     }
 
-    let timeout_msg = "服务启动超时，未在指定时间内响应健康检查 (请查看上述错误日志)".to_string();
+    let timeout_msg = "服务启动超时，未在指定时间内响应健康检查".to_string();
     push_service_log(format!("❌ {timeout_msg}"));
     Err(timeout_msg)
 }
 
 #[tauri::command]
 async fn stop_gptmcp_service() -> Result<ServiceControlResult, String> {
-    push_service_log("收到停止 GPTMCP 核心服务请求...");
+    push_service_log("⏹️ 收到停止 GPTMCP 核心服务请求...");
     if let Ok(mut guard) = MANAGED_CHILD.lock() {
         if let Some(mut child) = guard.take() {
             let pid = child.id();
-            push_service_log(format!("正在终止托管的后台进程 (PID: {pid})..."));
+            push_service_log(format!("🔪 正在终止托管后台进程 (PID: {pid})..."));
             let _ = child.kill();
         }
     }
 
     #[cfg(windows)]
     {
-        push_service_log("清理 7676 端口占用的网络连接与残留进程...");
+        push_service_log("🧹 清理 7676 端口占用的网络连接与残留进程...");
         let _ = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command", "Get-NetTCPConnection -LocalPort 7676 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"])
             .creation_flags(0x08000000)
@@ -564,7 +571,7 @@ async fn stop_gptmcp_service() -> Result<ServiceControlResult, String> {
     tokio::time::sleep(Duration::from_millis(600)).await;
 
     if !check_health().await {
-        push_service_log("✅ GPTMCP 核心服务已成功停止，端口 7676 已释放。");
+        push_service_log("✅ GPTMCP 核心服务已成功停止，7676 端口已完全释放。");
         Ok(ServiceControlResult {
             ok: true,
             message: "服务已成功停止".to_string(),
@@ -578,9 +585,11 @@ async fn stop_gptmcp_service() -> Result<ServiceControlResult, String> {
 
 #[tauri::command]
 async fn restart_gptmcp_service() -> Result<ServiceControlResult, String> {
-    push_service_log("🔄 正在执行 GPTMCP 核心服务重启流程...");
+    push_service_log("🔄 收到重启 GPTMCP 核心服务请求...");
+    push_service_log("⏹️ 第一步: 停止现有服务并释放端口...");
     let _ = stop_gptmcp_service().await;
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    push_service_log("🚀 第二步: 重新拉起 GPTMCP 核心服务...");
     start_gptmcp_service().await
 }
 

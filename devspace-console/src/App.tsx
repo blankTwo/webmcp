@@ -1586,9 +1586,9 @@ function App() {
                     <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--monitor-panel-soft)", borderBottom: "1px solid var(--monitor-line)" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <TerminalSquare size={14} color="var(--monitor-blue)" />
-                        <strong>GPTMCP 核心服务控制台 / 启动 / 重启日志</strong>
+                        <strong>GPTMCP 核心服务生命周期与启停日志</strong>
                         <span style={{ fontSize: 11, color: "var(--monitor-text-soft)" }}>
-                          {isServiceOnline ? "状态: 监听在 7676 端口" : "状态: 服务已停止"}
+                          {isServiceOnline ? "状态: 7676 端口运行中" : "状态: 服务已停止"}
                         </span>
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
@@ -1629,9 +1629,9 @@ function App() {
                           let color = "#e2e8f0";
                           if (line.includes("✅")) color = "#34d399";
                           else if (line.includes("❌") || line.includes("异常") || line.includes("错误") || line.includes("Fail")) color = "#f87171";
-                          else if (line.includes("⚠️") || line.includes("警告")) color = "#fbbf24";
-                          else if (line.includes("[构建]")) color = "#60a5fa";
-                          else if (line.includes("🔄") || line.includes("正在") || line.includes("准备")) color = "#93c5fd";
+                          else if (line.includes("⚠️") || line.includes("警告") || line.includes("⏹️") || line.includes("🧹") || line.includes("🔪")) color = "#fb923c";
+                          else if (line.includes("📦") || line.includes("⚙️") || line.includes("📁")) color = "#c084fc";
+                          else if (line.includes("🚀") || line.includes("🔄") || line.includes("正在") || line.includes("准备") || line.includes("⚡") || line.includes("🩺") || line.includes("🌐")) color = "#60a5fa";
                           return (
                             <div key={idx} style={{ color, padding: "1px 0", wordBreak: "break-all" }}>
                               {line}
@@ -1639,7 +1639,7 @@ function App() {
                           );
                         })
                       ) : (
-                        <div style={{ color: "#64748b" }}>暂无服务日志。点击「启动服务」或「重启服务」将实时输出进程生命周期日志。</div>
+                        <div style={{ color: "#64748b" }}>暂无启停日志。点击「启动服务」、「停止服务」或「重启服务」查看全流程生命周期事件。</div>
                       )}
                     </div>
                   </div>
