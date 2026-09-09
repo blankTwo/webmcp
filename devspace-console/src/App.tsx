@@ -2325,7 +2325,7 @@ function App() {
           </button>
           <button title="最小化" onClick={() => void appWindow.minimize()}><Minus size={15} /></button>
           <button title="最大化 / 还原" onClick={() => void appWindow.toggleMaximize()}><Square size={12} /></button>
-          <button className="close" title="关闭" onClick={() => void appWindow.close()}><X size={15} /></button>
+          <button className="close" title="关闭窗口 (后台保持 MCP 服务与悬浮球运行)" onClick={() => void appWindow.hide()}><X size={15} /></button>
         </div>
       </header>
 

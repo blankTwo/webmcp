@@ -8,6 +8,8 @@ use std::{
     time::Duration,
 };
 use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -61,7 +63,13 @@ fn push_service_log(msg: impl AsRef<str>) {
         if logs.len() > 500 {
             logs.remove(0);
         }
-        logs.push(formatted);
+        logs.push(formatted.clone());
+    }
+    if let Ok(log_path) = get_log_file_path() {
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            use std::io::Write;
+            let _ = writeln!(f, "{formatted}");
+        }
     }
 }
 
@@ -80,6 +88,14 @@ fn active_config_dir() -> Result<Option<PathBuf>, String> {
     Ok(config_directories()?.into_iter().find(|directory| {
         directory.join("config.json").is_file() && directory.join("auth.json").is_file()
     }))
+}
+
+fn get_log_file_path() -> Result<PathBuf, String> {
+    let dirs = config_directories()?;
+    let dir = dirs.into_iter().next().ok_or_else(|| "无法获取配置目录".to_string())?;
+    let logs_dir = dir.join("logs");
+    let _ = fs::create_dir_all(&logs_dir);
+    Ok(logs_dir.join("server.log"))
 }
 
 fn owner_token() -> Result<String, String> {
@@ -473,52 +489,38 @@ async fn start_webmcp_service() -> Result<ServiceControlResult, String> {
         push_service_log("📦 检测核心程序: dist/cli.js 就绪");
     }
 
-    push_service_log(format!("⚡ 启动后台服务进程: node dist/cli.js serve"));
+    push_service_log("⚡ 启动独立后台守护进程: node dist/cli.js serve (解耦客户端生命周期)");
+    let log_file_path = get_log_file_path().unwrap_or_else(|_| project_root.join("webmcp-server.log"));
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(true)
+        .open(&log_file_path)
+        .map_err(|e| format!("创建服务日志文件失败: {e}"))?;
+    let log_file_err = log_file.try_clone().map_err(|e| format!("复制日志文件句柄失败: {e}"))?;
+
     let mut cmd = std::process::Command::new("node");
     cmd.arg(&cli_path).arg("serve");
     cmd.current_dir(&project_root);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdout(log_file);
+    cmd.stderr(log_file_err);
 
     #[cfg(windows)]
     {
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        // 0x08000000 = CREATE_NO_WINDOW
+        // 0x00000008 = DETACHED_PROCESS (Fully detached from UI console process)
+        // 0x00000200 = CREATE_NEW_PROCESS_GROUP
+        cmd.creation_flags(0x08000000 | 0x00000008 | 0x00000200);
     }
 
-    let mut child = cmd.spawn().map_err(|e| {
+    let child = cmd.spawn().map_err(|e| {
         let msg = format!("启动服务失败: {e}");
         push_service_log(format!("❌ {msg}"));
         msg
     })?;
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-
-    if let Some(stdout) = stdout {
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                // Only capture key startup messages, avoid dumping runtime RPC/tool request logs
-                if line.contains("listening on") || line.contains("public base url") || line.contains("allowed roots") {
-                    push_service_log(format!("🌐 [服务] {line}"));
-                }
-            }
-        });
-    }
-
-    if let Some(stderr) = stderr {
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                if !line.trim().is_empty() {
-                    push_service_log(format!("⚠️ [服务异常] {line}"));
-                }
-            }
-        });
-    }
-
     let pid = child.id();
-    push_service_log(format!("⚡ 后台进程已创建 (PID: {pid})，正在探测 127.0.0.1:7676 响应..."));
+    push_service_log(format!("⚡ 独立后台服务进程已创建 (PID: {pid})，日志记录至: {}", log_file_path.display()));
 
     if let Ok(mut guard) = MANAGED_CHILD.lock() {
         *guard = Some(child);
@@ -528,10 +530,10 @@ async fn start_webmcp_service() -> Result<ServiceControlResult, String> {
     for i in 1..=16 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         if check_health().await {
-            push_service_log(format!("✅ 健康检查通过！WebMCP 核心服务已在 7676 端口正常运行 (耗时约 {:.1}s)", (i as f32) * 0.5));
+            push_service_log(format!("✅ 健康检查通过！WebMCP 核心服务已在 7676 端口独立运行 (耗时约 {:.1}s)", (i as f32) * 0.5));
             return Ok(ServiceControlResult {
                 ok: true,
-                message: "WebMCP 服务已成功启动并在 7676 端口运行".to_string(),
+                message: "WebMCP 服务已成功启动并在 7676 端口独立运行".to_string(),
             });
         }
     }
@@ -588,13 +590,32 @@ async fn restart_webmcp_service() -> Result<ServiceControlResult, String> {
 
 #[tauri::command]
 fn get_webmcp_service_logs() -> Vec<String> {
-    SERVICE_LOGS.lock().map(|logs| logs.clone()).unwrap_or_default()
+    let mut result = Vec::new();
+    if let Ok(log_path) = get_log_file_path() {
+        if log_path.is_file() {
+            if let Ok(file) = fs::File::open(&log_path) {
+                let reader = BufReader::new(file);
+                let lines: Vec<String> = reader.lines().filter_map(Result::ok).collect();
+                let start = if lines.len() > 300 { lines.len() - 300 } else { 0 };
+                result.extend_from_slice(&lines[start..]);
+            }
+        }
+    }
+    if let Ok(mem_logs) = SERVICE_LOGS.lock() {
+        for log in mem_logs.iter() {
+            result.push(log.clone());
+        }
+    }
+    result
 }
 
 #[tauri::command]
 fn clear_webmcp_service_logs() {
     if let Ok(mut logs) = SERVICE_LOGS.lock() {
         logs.clear();
+    }
+    if let Ok(log_path) = get_log_file_path() {
+        let _ = fs::write(log_path, "");
     }
 }
 
@@ -1280,8 +1301,105 @@ async fn show_main_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn exit_app(app_handle: tauri::AppHandle, stop_service: bool) -> Result<(), String> {
+    if stop_service {
+        let _ = stop_webmcp_service().await;
+        let _ = stop_cloudflared_tunnel().await;
+    }
+    app_handle.exit(0);
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            let show_i = MenuItem::with_id(app, "show", "打开 WebMCP 控制台", true, None::<&str>)?;
+            let float_i = MenuItem::with_id(app, "toggle_float", "切换桌面悬浮球", true, None::<&str>)?;
+            let restart_i = MenuItem::with_id(app, "restart", "重启 WebMCP 服务", true, None::<&str>)?;
+            let quit_console_i = MenuItem::with_id(app, "quit_console", "关闭控制台 (保持后台服务运行)", true, None::<&str>)?;
+            let quit_all_i = MenuItem::with_id(app, "quit_all", "停止服务并退出", true, None::<&str>)?;
+
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_i,
+                    &float_i,
+                    &restart_i,
+                    &quit_console_i,
+                    &quit_all_i,
+                ],
+            )?;
+
+            let mut tray_builder = TrayIconBuilder::new()
+                .menu(&menu)
+                .tooltip("WebMCP Console (本地开发执行层)")
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "show" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.unminimize();
+                                let _ = w.set_focus();
+                            }
+                        }
+                        "toggle_float" => {
+                            let handle = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let is_vis = is_float_ball_visible(handle.clone()).await.unwrap_or(false);
+                                let _ = toggle_float_ball(handle, !is_vis).await;
+                            });
+                        }
+                        "restart" => {
+                            tauri::async_runtime::spawn(async move {
+                                let _ = restart_webmcp_service().await;
+                            });
+                        }
+                        "quit_console" => {
+                            app.exit(0);
+                        }
+                        "quit_all" => {
+                            tauri::async_runtime::spawn(async move {
+                                let _ = stop_webmcp_service().await;
+                                let _ = stop_cloudflared_tunnel().await;
+                                std::process::exit(0);
+                            });
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                    }
+                });
+
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+
+            let _tray = tray_builder.build(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    // Hide main window instead of closing whole app so services & floating ball stay alive!
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_client_status,
             start_webmcp_service,
@@ -1303,7 +1421,8 @@ pub fn run() {
             select_folder_dialog,
             toggle_float_ball,
             is_float_ball_visible,
-            show_main_window
+            show_main_window,
+            exit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running WebMCP Console");
