@@ -1927,13 +1927,6 @@ function App() {
           <section className="monitor-sidebar-section workspace-section">
             <div className="monitor-sidebar-heading">
               <span>工作区</span>
-              <button
-                className="monitor-icon-button"
-                title="添加本地工作区"
-                onClick={() => setAddWorkspaceOpen(true)}
-              >
-                <Plus size={15} />
-              </button>
             </div>
             <div className="monitor-workspace-list">
               {workspaces.map((item) => (
@@ -1952,7 +1945,7 @@ function App() {
                 <div className="monitor-sidebar-empty">
                   <Folder size={24} color="var(--monitor-muted)" />
                   <span>暂无已连接工作区</span>
-                  <small>通过 WebMCP 打开或点击上方加号添加本地项目</small>
+                  <small>在下方「目录白名单与工作区」管理或通过 WebMCP 访问</small>
                 </div>
               )}
               {loading && !workspaces.length && (
