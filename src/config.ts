@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 import type { LoggingConfig, LogFormat, LogLevel } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
-import { devspaceSkillsDir, loadDevspaceFiles } from "./user-config.js";
+import { webmcpSkillsDir, loadWebmcpFiles } from "./user-config.js";
 
 export type ToolMode = "minimal" | "full" | "codex";
 export type WidgetMode = "off";
@@ -26,7 +26,7 @@ export interface ServerConfig {
   artifactMaxFileBytes: number;
   skillsEnabled: boolean;
   skillPaths: string[];
-  gptmcpSkillsDir: string;
+  webmcpSkillsDir: string;
   agentDir: string;
   logging: LoggingConfig;
 }
@@ -83,13 +83,13 @@ function parseBoolean(value: string | undefined): boolean {
 }
 
 function configEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
-  return env[`GPTMCP_${name}`] ?? env[`DEVSPACE_${name}`];
+  return env[`WEBMCP_${name}`];
 }
 
 function parseToolMode(env: NodeJS.ProcessEnv): ToolMode {
   const mode = configEnv(env, "TOOL_MODE");
   if (mode === "minimal" || mode === "full" || mode === "codex") return mode;
-  if (mode) throw new Error(`Invalid GPTMCP_TOOL_MODE: ${mode}`);
+  if (mode) throw new Error(`Invalid WEBMCP_TOOL_MODE: ${mode}`);
 
   const legacyMinimalTools = configEnv(env, "MINIMAL_TOOLS");
   if (legacyMinimalTools !== undefined) {
@@ -102,14 +102,14 @@ function parseLogLevel(value: string | undefined): LogLevel {
   if (!value || value === "info") return "info";
   if (["silent", "error", "warn", "debug"].includes(value)) return value as LogLevel;
 
-  throw new Error(`Invalid GPTMCP_LOG_LEVEL: ${value}`);
+  throw new Error(`Invalid WEBMCP_LOG_LEVEL: ${value}`);
 }
 
 function parseLogFormat(value: string | undefined): LogFormat {
   if (!value || value === "json") return "json";
   if (value === "pretty") return "pretty";
 
-  throw new Error(`Invalid GPTMCP_LOG_FORMAT: ${value}`);
+  throw new Error(`Invalid WEBMCP_LOG_FORMAT: ${value}`);
 }
 
 function parsePathList(value: string | undefined): string[] {
@@ -161,13 +161,13 @@ function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
 function parseWidgetMode(value: string | undefined): WidgetMode {
   if (!value || value === "off" || value === "changes" || value === "full") return "off";
 
-  throw new Error(`Invalid GPTMCP_WIDGETS: ${value}`);
+  throw new Error(`Invalid WEBMCP_WIDGETS: ${value}`);
 }
 
 function parseRequiredSecret(value: string | undefined, name: string): string {
   const secret = value?.trim();
   if (!secret) {
-    throw new Error(`${name} is required for GPTMCP OAuth. Run: gptmcp init`);
+    throw new Error(`${name} is required for WebMCP OAuth. Run: webmcp init`);
   }
   if (secret.length < 16) {
     throw new Error(`${name} must be at least 16 characters long.`);
@@ -177,32 +177,33 @@ function parseRequiredSecret(value: string | undefined, name: string): string {
 
 function parseOAuthConfig(env: NodeJS.ProcessEnv, ownerToken: string | undefined): OAuthConfig {
   return {
-    ownerToken: parseRequiredSecret(configEnv(env, "OAUTH_OWNER_TOKEN") ?? ownerToken, "GPTMCP_OAUTH_OWNER_TOKEN"),
+    ownerToken: parseRequiredSecret(configEnv(env, "OAUTH_OWNER_TOKEN") ?? ownerToken, "WEBMCP_OAUTH_OWNER_TOKEN"),
     accessTokenTtlSeconds: parsePositiveInteger(
       configEnv(env, "OAUTH_ACCESS_TOKEN_TTL_SECONDS"),
       DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS,
-      "GPTMCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
+      "WEBMCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
     ),
     refreshTokenTtlSeconds: parsePositiveInteger(
       configEnv(env, "OAUTH_REFRESH_TOKEN_TTL_SECONDS"),
       DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS,
-      "GPTMCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS",
+      "WEBMCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS",
     ),
-    scopes: parseStringList(env.GPTMCP_OAUTH_SCOPES ?? env.DEVSPACE_OAUTH_SCOPES, ["gptmcp"]),
+    scopes: parseStringList(env.WEBMCP_OAUTH_SCOPES, ["webmcp"]),
     allowedRedirectHosts: parseStringList(configEnv(env, "OAUTH_ALLOWED_REDIRECT_HOSTS"), [
       "chatgpt.com",
+      "claude.ai",
       "localhost",
       "127.0.0.1",
     ]),
   };
 }
 
-function defaultStateDir(legacy: boolean): string {
-  return join(homedir(), ".local", "share", legacy ? "devspace" : "gptmcp");
+function defaultStateDir(): string {
+  return join(homedir(), ".local", "share", "webmcp");
 }
 
-function defaultWorktreeRoot(legacy: boolean): string {
-  return join(homedir(), legacy ? ".devspace" : ".gptmcp", "worktrees");
+function defaultWorktreeRoot(): string {
+  return join(homedir(), ".webmcp", "worktrees");
 }
 
 function defaultAgentDir(): string {
@@ -210,11 +211,11 @@ function defaultAgentDir(): string {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
-  const files = loadDevspaceFiles(env);
+  const files = loadWebmcpFiles(env);
   const host = env.HOST ?? files.config.host ?? "127.0.0.1";
   const port = parsePort(env.PORT ?? files.config.port);
   const publicBaseUrl = parsePublicBaseUrl(
-    env.GPTMCP_PUBLIC_BASE_URL ?? env.DEVSPACE_PUBLIC_BASE_URL ?? files.config.publicBaseUrl ?? localPublicBaseUrl(host, port),
+    env.WEBMCP_PUBLIC_BASE_URL ?? files.config.publicBaseUrl ?? localPublicBaseUrl(host, port),
   );
   const derivedAllowedHosts = [
     "localhost",
@@ -229,13 +230,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     host,
     port,
     oauth: parseOAuthConfig(env, files.auth.ownerToken),
-    allowedRoots: parseAllowedRoots(env.GPTMCP_ALLOWED_ROOTS ?? env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
-    allowedHosts: parseAllowedHosts(env.GPTMCP_ALLOWED_HOSTS ?? env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
+    allowedRoots: parseAllowedRoots(env.WEBMCP_ALLOWED_ROOTS ?? files.config.allowedRoots),
+    allowedHosts: parseAllowedHosts(env.WEBMCP_ALLOWED_HOSTS, derivedAllowedHosts),
     publicBaseUrl,
     toolMode: parseToolMode(env),
     widgets: parseWidgetMode(configEnv(env, "WIDGETS")),
-    stateDir: resolve(expandHomePath(env.GPTMCP_STATE_DIR ?? env.DEVSPACE_STATE_DIR ?? files.config.stateDir ?? defaultStateDir(files.legacy))),
-    worktreeRoot: resolve(expandHomePath(env.GPTMCP_WORKTREE_ROOT ?? env.DEVSPACE_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot(files.legacy))),
+    stateDir: resolve(expandHomePath(env.WEBMCP_STATE_DIR ?? files.config.stateDir ?? defaultStateDir())),
+    worktreeRoot: resolve(expandHomePath(env.WEBMCP_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
     artifactsEnabled:
       configEnv(env, "ARTIFACTS") === undefined
         ? files.config.artifactsEnabled === true
@@ -243,11 +244,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     artifactMaxFileBytes: parsePositiveInteger(
       configEnv(env, "ARTIFACT_MAX_FILE_BYTES") ?? numberConfigValue(files.config.artifactMaxFileBytes),
       DEFAULT_ARTIFACT_MAX_FILE_BYTES,
-      "GPTMCP_ARTIFACT_MAX_FILE_BYTES",
+      "WEBMCP_ARTIFACT_MAX_FILE_BYTES",
     ),
     skillsEnabled: configEnv(env, "SKILLS") === undefined ? true : parseBoolean(configEnv(env, "SKILLS")),
     skillPaths: parsePathList(configEnv(env, "SKILL_PATHS")),
-    gptmcpSkillsDir: devspaceSkillsDir(env),
+    webmcpSkillsDir: webmcpSkillsDir(env),
     agentDir: resolve(expandHomePath(configEnv(env, "AGENT_DIR") ?? files.config.agentDir ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
   };

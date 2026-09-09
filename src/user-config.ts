@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 
-export interface DevspaceUserConfig {
+export interface WebmcpUserConfig {
   host?: string;
   port?: number;
   allowedRoots?: string[];
@@ -22,45 +22,41 @@ export interface DevspaceUserConfig {
   agentDir?: string;
 }
 
-export interface DevspaceAuthConfig {
+export interface WebmcpAuthConfig {
   ownerToken?: string;
 }
 
-export interface DevspaceFiles {
+export interface WebmcpFiles {
   dir: string;
   configPath: string;
   authPath: string;
   configExists: boolean;
   authExists: boolean;
-  config: DevspaceUserConfig;
-  auth: DevspaceAuthConfig;
+  config: WebmcpUserConfig;
+  auth: WebmcpAuthConfig;
   legacy: boolean;
 }
 
-export function devspaceConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.GPTMCP_CONFIG_DIR ?? env.DEVSPACE_CONFIG_DIR;
+export function webmcpConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.WEBMCP_CONFIG_DIR;
   if (configured) return resolve(expandHomePath(configured));
-  const current = join(homedir(), ".gptmcp");
-  const legacy = join(homedir(), ".devspace");
-  return existsSync(join(current, "config.json")) || !existsSync(join(legacy, "config.json"))
-    ? current
-    : legacy;
+  return join(homedir(), ".webmcp");
 }
 
-export function devspaceConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(devspaceConfigDir(env), "config.json");
+export function webmcpConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(webmcpConfigDir(env), "config.json");
 }
 
-export function devspaceAuthPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(devspaceConfigDir(env), "auth.json");
+export function webmcpAuthPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(webmcpConfigDir(env), "auth.json");
 }
 
-export function devspaceSkillsDir(env: NodeJS.ProcessEnv = process.env): string {
-  return join(devspaceConfigDir(env), "skills");
+export function webmcpSkillsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(webmcpConfigDir(env), "skills");
 }
 
-export function loadDevspaceFiles(env: NodeJS.ProcessEnv = process.env): DevspaceFiles {
-  const dir = devspaceConfigDir(env);
+export function loadWebmcpFiles(env: NodeJS.ProcessEnv = process.env): WebmcpFiles {
+  const dir = webmcpConfigDir(env);
   const configPath = join(dir, "config.json");
   const authPath = join(dir, "auth.json");
   const configExists = existsSync(configPath);
@@ -72,28 +68,28 @@ export function loadDevspaceFiles(env: NodeJS.ProcessEnv = process.env): Devspac
     authPath,
     configExists,
     authExists,
-    config: configExists ? readJsonFile<DevspaceUserConfig>(configPath) : {},
-    auth: authExists ? readJsonFile<DevspaceAuthConfig>(authPath) : {},
-    legacy: dir === join(homedir(), ".devspace"),
+    config: configExists ? readJsonFile<WebmcpUserConfig>(configPath) : {},
+    auth: authExists ? readJsonFile<WebmcpAuthConfig>(authPath) : {},
+    legacy: dir === join(homedir(), ".webmcp"),
   };
 }
 
-export function writeDevspaceConfig(
-  config: DevspaceUserConfig,
+export function writeWebmcpConfig(
+  config: WebmcpUserConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const filePath = devspaceConfigPath(env);
-  mkdirSync(devspaceConfigDir(env), { recursive: true });
+  const filePath = webmcpConfigPath(env);
+  mkdirSync(webmcpConfigDir(env), { recursive: true });
   writeJsonFile(filePath, config, 0o600);
   return filePath;
 }
 
-export function writeDevspaceAuth(
-  auth: DevspaceAuthConfig,
+export function writeWebmcpAuth(
+  auth: WebmcpAuthConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const filePath = devspaceAuthPath(env);
-  mkdirSync(devspaceConfigDir(env), { recursive: true });
+  const filePath = webmcpAuthPath(env);
+  mkdirSync(webmcpConfigDir(env), { recursive: true });
   writeJsonFile(filePath, auth, 0o600);
   return filePath;
 }

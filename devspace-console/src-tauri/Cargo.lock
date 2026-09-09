@@ -1195,19 +1195,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gptmcp-console"
-version = "1.0.0"
-dependencies = [
- "chrono",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tokio",
-]
-
-[[package]]
 name = "gtk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4302,6 +4289,19 @@ dependencies = [
  "pkg-config",
  "soup3-sys",
  "system-deps",
+]
+
+[[package]]
+name = "webmcp-console"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
 ]
 
 [[package]]

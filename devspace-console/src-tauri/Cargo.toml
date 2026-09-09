@@ -1,12 +1,12 @@
 [package]
-name = "gptmcp-console"
+name = "webmcp-console"
 version = "1.0.0"
-description = "GPTMCP Desktop Console"
-authors = ["GPTMCP Team"]
+description = "WebMCP Desktop Console"
+authors = ["WebMCP Team"]
 edition = "2021"
 
 [lib]
-name = "gptmcp_console_lib"
+name = "webmcp_console_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

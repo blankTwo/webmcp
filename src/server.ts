@@ -53,7 +53,7 @@ import {
   type WorkspaceResumeStateInput,
 } from "./workspace-memory.js";
 import { formatAgentsPath, WorkspaceRegistry, type Workspace } from "./workspaces.js";
-import { GPTMCP_VERSION } from "./version.js";
+import { WEBMCP_VERSION } from "./version.js";
 import {
   bindConsoleEventStore,
   closeConsoleEventStore,
@@ -215,13 +215,13 @@ interface ToolLogFields {
 
 function serverInstructions(config: ServerConfig): string {
   const artifactInstruction = config.artifactsEnabled && isArtifactDownloadSupportedPlatform()
-    ? " When the user supplies or generates a file that is not present on the GPTMCP host, use download_artifact with its native file value, the existing workspace ID, and a suitable relative destination path chosen from the user's request and project structure. The tool refuses to overwrite an existing destination and returns the normalized workspace-relative path. Use normal workspace tools when explicit inspection, replacement, movement, renaming, or deletion is needed. Do not recreate binary files with write/edit calls or place signed URLs, native file objects, base64 content, or invented host paths in shell commands or logs."
+    ? " When the user supplies or generates a file that is not present on the WebMCP host, use download_artifact with its native file value, the existing workspace ID, and a suitable relative destination path chosen from the user's request and project structure. The tool refuses to overwrite an existing destination and returns the normalized workspace-relative path. Use normal workspace tools when explicit inspection, replacement, movement, renaming, or deletion is needed. Do not recreate binary files with write/edit calls or place signed URLs, native file objects, base64 content, or invented host paths in shell commands or logs."
     : "";
   const memoryInstruction =
     " Use checkpoint only at meaningful milestones, before switching tasks, or when the user pauses work; do not checkpoint after every tool call. Use history_search only when a previous checkpoint is needed to recover an older decision or detail that is not in the current continuation. Compatibility: if the user says exactly `checkpoint` but this conversation does not expose the checkpoint tool, use the existing bash tool with command `checkpoint` and immediately follow the returned machine instruction without asking the user for more input.";
 
   if (config.toolMode === "codex") {
-    return `Use GPTMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
+    return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -238,7 +238,7 @@ function serverInstructions(config: ServerConfig): string {
     ? " Use exec_command for long-running or interactive commands, write_stdin to poll or interact with them, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session."
     : "";
 
-  return `Use GPTMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}Prefer ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
+  return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}Prefer ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
 }
 
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
@@ -733,7 +733,7 @@ function registerManagedProcessTools(
         includeCompleted: z
           .boolean()
           .optional()
-          .describe("Include recently completed sessions retained by GPTMCP. Defaults to true."),
+          .describe("Include recently completed sessions retained by WebMCP. Defaults to true."),
       },
       outputSchema: resultOutputSchema({
         processes: z.array(processInfoSchema()),
@@ -802,7 +802,7 @@ function registerManagedProcessTools(
     {
       title: "Terminate process",
       description:
-        "Terminate a managed process session. GPTMCP first requests graceful termination, waits briefly, then force-kills the process tree if it is still running.",
+        "Terminate a managed process session. WebMCP first requests graceful termination, waits briefly, then force-kills the process tree if it is still running.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         sessionId: z.number().int().positive().describe("Process session identifier returned by exec_command."),
@@ -858,9 +858,9 @@ export function createMcpServer(
 ): McpServer {
   const server = new McpServer(
     {
-      name: "gptmcp",
-      title: "GPTMCP",
-      version: GPTMCP_VERSION,
+      name: "webmcp",
+      title: "WebMCP",
+      version: WebMCP_VERSION,
       description:
         "Coding tools for project workspaces. Open each project or worktree once, then reuse its workspaceId.",
     },
@@ -2296,8 +2296,8 @@ server.registerTool(
     {
       title: "Bash",
       description: config.toolMode !== "full"
-        ? `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, search, file discovery, and directory inspection. ${SHELL_GIT_WRITE_ALLOWANCE} In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by GPTMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`
-        : `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by GPTMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`,
+        ? `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, search, file discovery, and directory inspection. ${SHELL_GIT_WRITE_ALLOWANCE} In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by WebMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`
+        : `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by WebMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         command: z
@@ -2328,13 +2328,13 @@ server.registerTool(
 
       if (legacyCheckpoint?.kind === "prepare") {
         const result = [
-          "GPTMCP_CHECKPOINT_STATE_REQUIRED",
+          "WebMCP_CHECKPOINT_STATE_REQUIRED",
           "The user asked to save this legacy conversation as a workspace checkpoint.",
           "Do not ask the user any follow-up question. Immediately call this same bash tool again; the current conversation workspace binding will be reused automatically.",
           "The command must start with `checkpoint ` followed by one JSON object containing the semantic state you can infer from the current conversation.",
           "Required JSON fields: goal, currentTask. Optional array fields: completed, decisions, files, verification, blockers, next.",
           "Example: checkpoint {\"goal\":\"Continue the project\",\"currentTask\":\"Finish the current phase\",\"completed\":[],\"decisions\":[],\"files\":[],\"verification\":[],\"blockers\":[],\"next\":[]}",
-          "GPTMCP will intercept the second command too; neither command is executed by the operating system.",
+          "WebMCP will intercept the second command too; neither command is executed by the operating system.",
         ].join("\n");
         return {
           content: [textBlock(result)],
@@ -2467,9 +2467,9 @@ export function createServer(
   }
 
   app.use((req, _res, next) => {
-    const ownerToken = req.header("x-gptmcp-owner-token");
-    if (ownerToken && !req.header("x-devspace-owner-token")) {
-      req.headers["x-devspace-owner-token"] = ownerToken;
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (ownerToken && !req.header("x-webmcp-owner-token")) {
+      req.headers["x-webmcp-owner-token"] = ownerToken;
     }
     next();
   });
@@ -2503,7 +2503,7 @@ export function createServer(
       baseUrl: new URL(config.publicBaseUrl),
       resourceServerUrl,
       scopesSupported: config.oauth.scopes,
-      resourceName: "GPTMCP",
+      resourceName: "WebMCP",
     }),
   );
 
@@ -2512,7 +2512,7 @@ export function createServer(
   });
 
   app.get("/statusz", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2522,7 +2522,7 @@ export function createServer(
   });
 
   app.get("/statusz/optimizer", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2535,7 +2535,7 @@ export function createServer(
   });
 
   app.get("/console/snapshot", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2560,7 +2560,7 @@ export function createServer(
   });
 
   app.post("/console/workspaces", express.json(), async (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2604,7 +2604,7 @@ export function createServer(
   });
 
   app.get("/console/processes", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2634,7 +2634,7 @@ export function createServer(
   });
 
   app.get("/console/processes/:sessionId/output", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2658,7 +2658,7 @@ export function createServer(
   });
 
   app.post("/console/processes/:sessionId/terminate", express.json(), async (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2682,7 +2682,7 @@ export function createServer(
   });
 
   app.get("/console/history", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2712,7 +2712,7 @@ export function createServer(
   });
 
   app.get("/console/memory", async (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2737,7 +2737,7 @@ export function createServer(
   });
 
   app.delete("/console/memory/resume", async (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2762,7 +2762,7 @@ export function createServer(
   });
 
   app.put("/console/events/:id/favorite", express.json(), (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2784,7 +2784,7 @@ export function createServer(
   });
 
   app.post("/console/cleanup", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2795,7 +2795,7 @@ export function createServer(
   });
 
   app.delete("/console/events", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2806,7 +2806,7 @@ export function createServer(
   });
 
   app.put("/console/settings", express.json(), (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -2830,7 +2830,7 @@ export function createServer(
   });
 
   app.get("/console/events", (req, res) => {
-    const ownerToken = req.header("x-devspace-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token");
     if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
       res.status(401).json({ ok: false, error: "Unauthorized" });
       return;
@@ -3019,7 +3019,7 @@ if (await isMainModule()) {
   const { app, config, close } = createServer();
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(
-      `gptmcp listening on http://${config.host}:${config.port}/mcp`,
+      `webmcp listening on http://${config.host}:${config.port}/mcp`,
     );
     console.log(`allowed roots: ${config.allowedRoots.join(", ")}`);
     console.log("auth: oauth owner-token flow required");
@@ -3044,7 +3044,7 @@ if (await isMainModule()) {
   };
   const handleShutdown = () => {
     void shutdown().catch((error) => {
-    console.error("gptmcp shutdown failed", error);
+    console.error("webmcp shutdown failed", error);
       process.exit(1);
     });
   };

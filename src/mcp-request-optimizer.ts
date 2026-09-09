@@ -68,8 +68,7 @@ export class McpRequestOptimizer {
     }
 
     this.hits += 1;
-    res.setHeader("X-GPTMCP-Cache", "hit");
-    res.setHeader("X-GPTMCP-Cache", "hit");
+    res.setHeader("X-WebMCP-Cache", "hit");
     res.status(200).json({
       jsonrpc: "2.0",
       id: request.id,

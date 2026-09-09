@@ -609,7 +609,7 @@ const SKIPPED_CONTEXT_DIRS = new Set([
   ".hg",
   ".svn",
   ".gptmcp",
-  ".devspace",
+  ".webmcp",
   "node_modules",
   "dist",
   "build",

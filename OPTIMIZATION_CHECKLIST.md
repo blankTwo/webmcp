@@ -1,4 +1,4 @@
-# DevSpace MCP 性能优化验收清单
+# WebMCP MCP 性能优化验收清单
 
 ## 正确性
 
@@ -30,7 +30,7 @@
 - [x] `benchmark.sh` 使用真实 OAuth Access Token
 - [x] Owner Token 与 OAuth Access Token 明确分离
 - [x] benchmark preflight 验证 HTTP 200
-- [x] benchmark 强制验证 `X-DevSpace-Cache: hit`
+- [x] benchmark 强制验证 `X-WebMCP-Cache: hit`
 - [x] non-2xx / errors / timeouts / mismatches 非零时失败
 
 ## 2026-09-07 有效 OAuth 本机结果

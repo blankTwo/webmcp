@@ -122,8 +122,8 @@ function processEnvironment(input?: {
     CODEX_CI: "1",
     LANG: process.env.LANG ?? "C.UTF-8",
     LC_ALL: process.env.LC_ALL ?? "C.UTF-8",
-    ...(input?.workspaceId ? { GPTMCP_WORKSPACE_ID: input.workspaceId, DEVSPACE_WORKSPACE_ID: input.workspaceId } : {}),
-    ...(input?.workspaceRoot ? { GPTMCP_WORKSPACE_ROOT: input.workspaceRoot, DEVSPACE_WORKSPACE_ROOT: input.workspaceRoot } : {}),
+    ...(input?.workspaceId ? { GPTMCP_WORKSPACE_ID: input.workspaceId, WEBMCP_WORKSPACE_ID: input.workspaceId } : {}),
+    ...(input?.workspaceRoot ? { GPTMCP_WORKSPACE_ROOT: input.workspaceRoot, WEBMCP_WORKSPACE_ROOT: input.workspaceRoot } : {}),
   };
 }
 

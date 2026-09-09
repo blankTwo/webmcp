@@ -65,14 +65,14 @@ fn push_service_log(msg: impl AsRef<str>) {
 }
 
 fn config_directories() -> Result<Vec<PathBuf>, String> {
-    if let Some(path) = env::var_os("GPTMCP_CONFIG_DIR").or_else(|| env::var_os("DEVSPACE_CONFIG_DIR")) {
+    if let Some(path) = env::var_os("WEBMCP_CONFIG_DIR") {
         return Ok(vec![PathBuf::from(path)]);
     }
     let home = env::var_os("USERPROFILE")
         .or_else(|| env::var_os("HOME"))
         .map(PathBuf::from)
         .ok_or_else(|| "Cannot resolve the user configuration directory.".to_string())?;
-    Ok(vec![home.join(".gptmcp"), home.join(".devspace")])
+    Ok(vec![home.join(".webmcp")])
 }
 
 fn active_config_dir() -> Result<Option<PathBuf>, String> {
@@ -82,15 +82,15 @@ fn active_config_dir() -> Result<Option<PathBuf>, String> {
 }
 
 fn owner_token() -> Result<String, String> {
-    let directory = active_config_dir()?.ok_or_else(|| "Run `gptmcp init` before opening the Console.".to_string())?;
+    let directory = active_config_dir()?.ok_or_else(|| "Run `webmcp init` before opening the Console.".to_string())?;
     let auth: Value = serde_json::from_slice(
-        &fs::read(directory.join("auth.json")).map_err(|error| format!("Cannot read GPTMCP auth: {error}"))?,
-    ).map_err(|error| format!("Cannot parse GPTMCP auth: {error}"))?;
+        &fs::read(directory.join("auth.json")).map_err(|error| format!("Cannot read WebMCP auth: {error}"))?,
+    ).map_err(|error| format!("Cannot parse WebMCP auth: {error}"))?;
     auth.get("ownerToken")
         .and_then(Value::as_str)
         .filter(|token| !token.is_empty())
         .map(str::to_owned)
-        .ok_or_else(|| "GPTMCP auth does not contain an Owner password.".to_string())
+        .ok_or_else(|| "WebMCP auth does not contain an Owner password.".to_string())
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -159,12 +159,12 @@ fn get_system_drives() -> Vec<DriveCandidate> {
     #[cfg(windows)]
     {
         let candidates = [
-            "devspace-main",
+            "webmcp-main",
             "webmcp-main",
             "webmcp",
-            "gptmcp-main",
-            "gptmcp",
-            "devspace",
+            "webmcp-main",
+            "webmcp",
+            "webmcp",
         ];
         for letter in b'C'..=b'Z' {
             let drive_str = format!("{}:\\", letter as char);
@@ -200,14 +200,14 @@ fn resolve_project_root() -> Option<PathBuf> {
     }
 
     // 2. Explicit environment variable
-    if let Some(path) = env::var_os("GPTMCP_PROJECT_DIR").or_else(|| env::var_os("DEVSPACE_PROJECT_DIR")) {
+    if let Some(path) = env::var_os("WEBMCP_PROJECT_DIR") {
         let p = PathBuf::from(path);
         if is_valid_project_dir(&p) {
             return Some(p);
         }
     }
 
-    // 3. Current working directory and its parents (devspace-console -> parent devspace-main)
+    // 3. Current working directory and its parents (webmcp-console -> parent webmcp-main)
     if let Ok(current) = env::current_dir() {
         if is_valid_project_dir(&current) {
             return Some(current);
@@ -263,7 +263,7 @@ fn ensure_default_config(project_root: &std::path::Path) -> Result<PathBuf, Stri
         .map(PathBuf::from)
         .ok_or_else(|| "无法解析用户主目录".to_string())?;
 
-    let config_dir = home.join(".gptmcp");
+    let config_dir = home.join(".webmcp");
     let _ = fs::create_dir_all(&config_dir);
 
     let config_file = config_dir.join("config.json");
@@ -291,7 +291,7 @@ fn ensure_default_config(project_root: &std::path::Path) -> Result<PathBuf, Stri
     if !auth_file.is_file() {
         use std::time::{SystemTime, UNIX_EPOCH};
         let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let token = format!("gptmcp-owner-{:x}", seed);
+        let token = format!("webmcp-owner-{:x}", seed);
         let default_auth = serde_json::json!({
             "ownerToken": token
         });
@@ -349,13 +349,13 @@ async fn get_client_status() -> Result<ClientStatus, String> {
     match response {
         Ok(response) if response.status().is_success() => {
             let payload: Value = response.json().await.unwrap_or(Value::Null);
-            if payload.get("name").and_then(Value::as_str) != Some("gptmcp") {
+            if payload.get("name").and_then(Value::as_str) != Some("webmcp") {
                 return Ok(ClientStatus {
                     connected: false,
                     configured,
                     local_url: LOCAL_BASE_URL.to_string(),
                     version: None,
-                    error: Some("Port 7676 is occupied by a service that is not GPTMCP.".to_string()),
+                    error: Some("Port 7676 is occupied by a service that is not WebMCP.".to_string()),
                 });
             }
             Ok(ClientStatus {
@@ -371,21 +371,21 @@ async fn get_client_status() -> Result<ClientStatus, String> {
             configured,
             local_url: LOCAL_BASE_URL.to_string(),
             version: None,
-            error: Some(format!("GPTMCP returned HTTP {}.", response.status())),
+            error: Some(format!("WebMCP returned HTTP {}.", response.status())),
         }),
         Err(error) => Ok(ClientStatus {
             connected: false,
             configured,
             local_url: LOCAL_BASE_URL.to_string(),
             version: None,
-            error: Some(format!("GPTMCP is not reachable: {error}")),
+            error: Some(format!("WebMCP is not reachable: {error}")),
         }),
     }
 }
 
 #[tauri::command]
-async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
-    push_service_log("🚀 收到启动 GPTMCP 服务请求...");
+async fn start_webmcp_service() -> Result<ServiceControlResult, String> {
+    push_service_log("🚀 收到启动 WebMCP 服务请求...");
     if check_health().await {
         push_service_log("ℹ️ 服务当前已在 127.0.0.1:7676 处于运行状态。");
         return Ok(ServiceControlResult {
@@ -406,8 +406,8 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
         }
     };
 
-    // 1. Ensure default configuration files (~/.gptmcp/config.json & auth.json) exist
-    push_service_log("⚙️ 检查配置文件: ~/.gptmcp/config.json 就绪");
+    // 1. Ensure default configuration files (~/.webmcp/config.json & auth.json) exist
+    push_service_log("⚙️ 检查配置文件: ~/.webmcp/config.json 就绪");
     let _ = ensure_default_config(&project_root);
 
     // 2. Automatically build dist/cli.js if missing
@@ -535,10 +535,10 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
     for i in 1..=16 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         if check_health().await {
-            push_service_log(format!("✅ 健康检查通过！GPTMCP 核心服务已在 7676 端口正常运行 (耗时约 {:.1}s)", (i as f32) * 0.5));
+            push_service_log(format!("✅ 健康检查通过！WebMCP 核心服务已在 7676 端口正常运行 (耗时约 {:.1}s)", (i as f32) * 0.5));
             return Ok(ServiceControlResult {
                 ok: true,
-                message: "GPTMCP 服务已成功启动并在 7676 端口运行".to_string(),
+                message: "WebMCP 服务已成功启动并在 7676 端口运行".to_string(),
             });
         }
     }
@@ -549,8 +549,8 @@ async fn start_gptmcp_service() -> Result<ServiceControlResult, String> {
 }
 
 #[tauri::command]
-async fn stop_gptmcp_service() -> Result<ServiceControlResult, String> {
-    push_service_log("⏹️ 收到停止 GPTMCP 核心服务请求...");
+async fn stop_webmcp_service() -> Result<ServiceControlResult, String> {
+    push_service_log("⏹️ 收到停止 WebMCP 核心服务请求...");
     if let Ok(mut guard) = MANAGED_CHILD.lock() {
         if let Some(mut child) = guard.take() {
             let pid = child.id();
@@ -571,7 +571,7 @@ async fn stop_gptmcp_service() -> Result<ServiceControlResult, String> {
     tokio::time::sleep(Duration::from_millis(600)).await;
 
     if !check_health().await {
-        push_service_log("✅ GPTMCP 核心服务已成功停止，7676 端口已完全释放。");
+        push_service_log("✅ WebMCP 核心服务已成功停止，7676 端口已完全释放。");
         Ok(ServiceControlResult {
             ok: true,
             message: "服务已成功停止".to_string(),
@@ -584,22 +584,22 @@ async fn stop_gptmcp_service() -> Result<ServiceControlResult, String> {
 }
 
 #[tauri::command]
-async fn restart_gptmcp_service() -> Result<ServiceControlResult, String> {
-    push_service_log("🔄 收到重启 GPTMCP 核心服务请求...");
+async fn restart_webmcp_service() -> Result<ServiceControlResult, String> {
+    push_service_log("🔄 收到重启 WebMCP 核心服务请求...");
     push_service_log("⏹️ 第一步: 停止现有服务并释放端口...");
-    let _ = stop_gptmcp_service().await;
+    let _ = stop_webmcp_service().await;
     tokio::time::sleep(Duration::from_millis(800)).await;
-    push_service_log("🚀 第二步: 重新拉起 GPTMCP 核心服务...");
-    start_gptmcp_service().await
+    push_service_log("🚀 第二步: 重新拉起 WebMCP 核心服务...");
+    start_webmcp_service().await
 }
 
 #[tauri::command]
-fn get_gptmcp_service_logs() -> Vec<String> {
+fn get_webmcp_service_logs() -> Vec<String> {
     SERVICE_LOGS.lock().map(|logs| logs.clone()).unwrap_or_default()
 }
 
 #[tauri::command]
-fn clear_gptmcp_service_logs() {
+fn clear_webmcp_service_logs() {
     if let Ok(mut logs) = SERVICE_LOGS.lock() {
         logs.clear();
     }
@@ -836,9 +836,9 @@ async fn stop_cloudflared_tunnel() -> Result<CloudflaredTunnelInfo, String> {
 }
 
 #[tauri::command]
-async fn proxy_gptmcp_api(method: String, path: String, body: Option<Value>) -> Result<Value, String> {
+async fn proxy_webmcp_api(method: String, path: String, body: Option<Value>) -> Result<Value, String> {
     if !path.starts_with("/console/") && path != "/statusz" && path != "/statusz/optimizer" {
-        return Err("The Console may only call GPTMCP status and console endpoints.".to_string());
+        return Err("The Console may only call WebMCP status and console endpoints.".to_string());
     }
     let method = match method.as_str() {
         "GET" => reqwest::Method::GET,
@@ -849,12 +849,12 @@ async fn proxy_gptmcp_api(method: String, path: String, body: Option<Value>) -> 
     };
     let mut request = http_client()?
         .request(method, format!("{LOCAL_BASE_URL}{path}"))
-        .header("x-gptmcp-owner-token", owner_token()?);
+        .header("x-webmcp-owner-token", owner_token()?);
     if let Some(body) = body { request = request.json(&body); }
-    let response = request.send().await.map_err(|error| format!("GPTMCP request failed: {error}"))?;
+    let response = request.send().await.map_err(|error| format!("WebMCP request failed: {error}"))?;
     let status = response.status();
-    let payload: Value = response.json().await.map_err(|error| format!("GPTMCP returned invalid JSON: {error}"))?;
-    if !status.is_success() { return Err(format!("GPTMCP returned HTTP {status}: {payload}")); }
+    let payload: Value = response.json().await.map_err(|error| format!("WebMCP returned invalid JSON: {error}"))?;
+    if !status.is_success() { return Err(format!("WebMCP returned HTTP {status}: {payload}")); }
     Ok(payload)
 }
 
@@ -1043,7 +1043,7 @@ async fn revert_workspace_file(workspace_path: Option<String>, file_path: String
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GptmcpConfigInfo {
+struct WebmcpConfigInfo {
     public_base_url: Option<String>,
     owner_token: Option<String>,
     allowed_roots: Vec<String>,
@@ -1051,7 +1051,7 @@ struct GptmcpConfigInfo {
 }
 
 #[tauri::command]
-async fn get_gptmcp_config() -> Result<GptmcpConfigInfo, String> {
+async fn get_webmcp_config() -> Result<WebmcpConfigInfo, String> {
     let dir = if let Ok(Some(existing)) = active_config_dir() {
         existing
     } else {
@@ -1059,7 +1059,7 @@ async fn get_gptmcp_config() -> Result<GptmcpConfigInfo, String> {
             .or_else(|| env::var_os("HOME"))
             .map(PathBuf::from)
             .ok_or_else(|| "无法解析用户主目录".to_string())?;
-        home.join(".gptmcp")
+        home.join(".webmcp")
     };
 
     let config_file = dir.join("config.json");
@@ -1086,7 +1086,7 @@ async fn get_gptmcp_config() -> Result<GptmcpConfigInfo, String> {
         }
     }
 
-    Ok(GptmcpConfigInfo {
+    Ok(WebmcpConfigInfo {
         public_base_url,
         owner_token: token,
         allowed_roots,
@@ -1095,7 +1095,7 @@ async fn get_gptmcp_config() -> Result<GptmcpConfigInfo, String> {
 }
 
 #[tauri::command]
-async fn set_gptmcp_public_url(url: Option<String>) -> Result<GptmcpConfigInfo, String> {
+async fn set_webmcp_public_url(url: Option<String>) -> Result<WebmcpConfigInfo, String> {
     let dir = if let Ok(Some(existing)) = active_config_dir() {
         existing
     } else {
@@ -1103,7 +1103,7 @@ async fn set_gptmcp_public_url(url: Option<String>) -> Result<GptmcpConfigInfo, 
             .or_else(|| env::var_os("HOME"))
             .map(PathBuf::from)
             .ok_or_else(|| "无法解析用户主目录".to_string())?;
-        let config_dir = home.join(".gptmcp");
+        let config_dir = home.join(".webmcp");
         let _ = fs::create_dir_all(&config_dir);
         config_dir
     };
@@ -1151,32 +1151,32 @@ async fn set_gptmcp_public_url(url: Option<String>) -> Result<GptmcpConfigInfo, 
 
     // Auto restart service if currently running so new URL/host immediately takes effect
     if check_health().await {
-        let _ = restart_gptmcp_service().await;
+        let _ = restart_webmcp_service().await;
     }
 
-    get_gptmcp_config().await
+    get_webmcp_config().await
 }
 
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_client_status,
-            start_gptmcp_service,
-            stop_gptmcp_service,
-            restart_gptmcp_service,
-            get_gptmcp_service_logs,
-            clear_gptmcp_service_logs,
+            start_webmcp_service,
+            stop_webmcp_service,
+            restart_webmcp_service,
+            get_webmcp_service_logs,
+            clear_webmcp_service_logs,
             get_cloudflared_status,
             start_cloudflared_tunnel,
             stop_cloudflared_tunnel,
             get_project_path_info,
             set_custom_project_root,
-            proxy_gptmcp_api,
+            proxy_webmcp_api,
             get_workspace_git_diff,
             revert_workspace_file,
-            get_gptmcp_config,
-            set_gptmcp_public_url
+            get_webmcp_config,
+            set_webmcp_public_url
         ])
         .run(tauri::generate_context!())
-        .expect("error while running GPTMCP Console");
+        .expect("error while running WebMCP Console");
 }

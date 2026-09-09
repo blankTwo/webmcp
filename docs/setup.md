@@ -1,7 +1,7 @@
 # Setup Guide
 
 This guide is for users who want ChatGPT or another MCP host to work in local
-projects through GPTMCP.
+projects through WebMCP.
 
 ## Requirements
 
@@ -9,9 +9,9 @@ projects through GPTMCP.
 - npm
 - Git
 - Bash, including Git Bash or WSL on Windows
-- a public HTTPS URL that forwards to the local GPTMCP server
+- a public HTTPS URL that forwards to the local WebMCP server
 
-GPTMCP does not create the public tunnel for you. Use Cloudflare Tunnel,
+WebMCP does not create the public tunnel for you. Use Cloudflare Tunnel,
 ngrok, Pinggy, Tailscale Funnel, or your own HTTPS reverse proxy.
 
 ## Install And Configure
@@ -19,14 +19,14 @@ ngrok, Pinggy, Tailscale Funnel, or your own HTTPS reverse proxy.
 Run:
 
 ```bash
-npx gptmcp init
+npx webmcp init
 ```
 
 The setup flow asks one question at a time.
 
 ### Project Roots
 
-Choose the folders ChatGPT is allowed to open through GPTMCP. Keep this
+Choose the folders ChatGPT is allowed to open through WebMCP. Keep this
 narrow.
 
 Examples:
@@ -79,32 +79,32 @@ https://your-tunnel-host.example.com/mcp
 Run:
 
 ```bash
-npx gptmcp serve
+npx webmcp serve
 ```
 
 If your tunnel URL changes for one run, override it without rewriting config:
 
 ```bash
-GPTMCP_PUBLIC_BASE_URL="https://new-tunnel.example.com" npx gptmcp serve
+WebMCP_PUBLIC_BASE_URL="https://new-tunnel.example.com" npx webmcp serve
 ```
 
 For a stable public URL, persist it:
 
 ```bash
-npx gptmcp config set publicBaseUrl https://gptmcp.example.com
-npx gptmcp serve
+npx webmcp config set publicBaseUrl https://webmcp.example.com
+npx webmcp serve
 ```
 
 ## Approve The Client
 
-When ChatGPT, Claude, or another MCP client connects, GPTMCP shows an Owner
+When ChatGPT, Claude, or another MCP client connects, WebMCP shows an Owner
 password approval page. Enter the Owner password printed during setup.
 
 The default config files are:
 
 ```text
-~/.gptmcp/config.json
-~/.gptmcp/auth.json
+~/.webmcp/config.json
+~/.webmcp/auth.json
 ```
 
 Keep `auth.json` private.
@@ -114,7 +114,7 @@ Keep `auth.json` private.
 Run:
 
 ```bash
-npx gptmcp doctor
+npx webmcp doctor
 ```
 
 The doctor command reports the resolved config, Node version, Node ABI, platform,
@@ -122,7 +122,7 @@ Git, Bash, public URL, allowed hosts, and SQLite native dependency status.
 
 ## Running From A Local Checkout
 
-If you are developing GPTMCP itself instead of using the published package:
+If you are developing WebMCP itself instead of using the published package:
 
 ```bash
 npm install --include=dev

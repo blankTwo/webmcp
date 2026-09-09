@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 export type ConsoleHttpMethod = "GET" | "POST" | "PUT" | "DELETE";
 
 export async function consoleApi<T>(method: ConsoleHttpMethod, path: string, body?: unknown): Promise<T> {
-  return invoke<T>("proxy_gptmcp_api", { method, path, body: body ?? null });
+  return invoke<T>("proxy_webmcp_api", { method, path, body: body ?? null });
 }
 
 export function withQuery(path: string, query: Record<string, string | number | boolean | null | undefined>) {

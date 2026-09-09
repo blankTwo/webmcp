@@ -9,19 +9,19 @@ import { satisfies } from "semver";
 import { loadConfig, type ServerConfig } from "./config.js";
 import {
   generateOwnerToken,
-  loadDevspaceFiles,
-  writeDevspaceAuth,
-  writeDevspaceConfig,
-  type DevspaceUserConfig,
+  loadWebmcpFiles,
+  writeWebmcpAuth,
+  writeWebmcpConfig,
+  type WebmcpUserConfig,
 } from "./user-config.js";
 import { expandHomePath } from "./roots.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 import {
   localServerUrl,
   restartEnvironment,
-  type GPTMCPRuntimeStatus,
+  type WebMCPRuntimeStatus,
 } from "./runtime-status.js";
-import { GPTMCP_NODE_RANGE, GPTMCP_VERSION } from "./version.js";
+import { WEBMCP_NODE_RANGE, WEBMCP_VERSION } from "./version.js";
 
 type Command = "serve" | "init" | "status" | "restart" | "doctor" | "config" | "help" | "version";
 const require = createRequire(import.meta.url);
@@ -73,19 +73,19 @@ function normalizeCommand(command: string | undefined): Command {
 }
 
 async function ensureConfigured(): Promise<void> {
-  const files = loadDevspaceFiles();
+  const files = loadWebmcpFiles();
   if (files.configExists && files.authExists) return;
-  if (process.env.GPTMCP_OAUTH_OWNER_TOKEN ?? process.env.DEVSPACE_OAUTH_OWNER_TOKEN) return;
+  if (process.env.WEBMCP_OAUTH_OWNER_TOKEN ?? process.env.WEBMCP_OAUTH_OWNER_TOKEN) return;
 
   if (!input.isTTY || !output.isTTY) {
     throw new Error(
       [
-        "GPTMCP is not configured and this terminal is non-interactive.",
+        "WebMCP is not configured and this terminal is non-interactive.",
         "",
         "Run:",
-        "  gptmcp init",
+        "  webmcp init",
         "",
-        "Or provide GPTMCP_OAUTH_OWNER_TOKEN and GPTMCP_ALLOWED_ROOTS.",
+        "Or provide WEBMCP_OAUTH_OWNER_TOKEN and WEBMCP_ALLOWED_ROOTS.",
       ].join("\n"),
     );
   }
@@ -94,15 +94,15 @@ async function ensureConfigured(): Promise<void> {
 }
 
 async function runInit({ force }: { force: boolean }): Promise<void> {
-  const files = loadDevspaceFiles();
+  const files = loadWebmcpFiles();
   if (!force && files.configExists && files.authExists) {
-    prompts.log.info(`GPTMCP is already configured at ${files.dir}`);
-    prompts.log.info("Run `gptmcp init --force` to update it.");
+    prompts.log.info(`WebMCP is already configured at ${files.dir}`);
+    prompts.log.info("Run `webmcp init --force` to update it.");
     return;
   }
 
   try {
-    prompts.intro("GPTMCP setup");
+    prompts.intro("WebMCP setup");
 
     const defaultRoots = files.config.allowedRoots?.join(", ") || process.cwd();
     const rootsAnswer = await textPrompt({
@@ -118,7 +118,7 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
 
     const defaultPort = String(files.config.port ?? 7676);
     const portAnswer = await textPrompt({
-      message: `Which local port should GPTMCP use? Press Enter to use ${defaultPort}`,
+      message: `Which local port should WebMCP use? Press Enter to use ${defaultPort}`,
       placeholder: defaultPort,
       defaultValue: defaultPort,
       validate: validatePort,
@@ -127,7 +127,7 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
 
     prompts.note(
       [
-        "GPTMCP needs a public base URL so ChatGPT can reach this MCP server.",
+        "WebMCP needs a public base URL so ChatGPT can reach this MCP server.",
         "Create a tunnel or reverse proxy with Cloudflare Tunnel, ngrok, Pinggy, Tailscale Funnel, or your own HTTPS proxy.",
         "Paste the public origin here, without /mcp.",
         "",
@@ -144,7 +144,7 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
       validate: validateRequiredPublicBaseUrl,
     }));
 
-    const config: DevspaceUserConfig = {
+    const config: WebmcpUserConfig = {
       host: files.config.host ?? "127.0.0.1",
       port,
       allowedRoots,
@@ -154,8 +154,8 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
       ownerToken: files.auth.ownerToken ?? generateOwnerToken(),
     };
 
-    const configPath = writeDevspaceConfig(config);
-    const authPath = writeDevspaceAuth(auth);
+    const configPath = writeWebmcpConfig(config);
+    const authPath = writeWebmcpAuth(auth);
 
     const lines = [
       `Config: ${configPath}`,
@@ -163,16 +163,16 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
       `Local MCP URL: http://${config.host}:${config.port}/mcp`,
       ...(publicBaseUrl ? [`Public MCP URL: ${publicBaseUrl}/mcp`] : []),
     ];
-    prompts.note(lines.join("\n"), "GPTMCP configured");
+    prompts.note(lines.join("\n"), "WebMCP configured");
     prompts.note(
       [
         `Owner password: ${auth.ownerToken}`,
-        "Use this when ChatGPT asks you to approve GPTMCP access.",
+        "Use this when ChatGPT asks you to approve WebMCP access.",
         `Stored at: ${authPath}`,
       ].join("\n"),
       "Owner password",
     );
-    prompts.outro("Run `gptmcp serve` to start the MCP server.");
+    prompts.outro("Run `webmcp serve` to start the MCP server.");
   } catch (error) {
     if (error instanceof SetupCancelledError) {
       prompts.cancel("Setup cancelled");
@@ -200,12 +200,12 @@ async function serve(): Promise<void> {
   const config = loadConfig();
   const { app, close } = createServer(config);
   const httpServer = app.listen(config.port, config.host, () => {
-    console.log(`gptmcp listening on http://${config.host}:${config.port}/mcp`);
+    console.log(`webmcp listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
     console.log(`allowed roots: ${config.allowedRoots.join(", ")}`);
     console.log(`allowed hosts: ${config.allowedHosts.join(", ")}`);
     if (config.allowedHosts.includes("*")) {
-      console.warn("warning: Host header allowlist is disabled because GPTMCP_ALLOWED_HOSTS=*");
+      console.warn("warning: Host header allowlist is disabled because WEBMCP_ALLOWED_HOSTS=*");
     }
     console.log("auth: Owner password approval required");
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
@@ -220,7 +220,7 @@ async function serve(): Promise<void> {
   };
   const handleShutdown = () => {
     void shutdown().catch((error) => {
-      console.error("gptmcp shutdown failed", error);
+      console.error("webmcp shutdown failed", error);
       process.exit(1);
     });
   };
@@ -231,7 +231,7 @@ async function serve(): Promise<void> {
 async function runStatus(): Promise<void> {
   const config = loadConfig();
   const runtime = await fetchRuntimeStatus(config);
-  console.log(`GPTMCP CLI: ${GPTMCP_VERSION}`);
+  console.log(`WebMCP CLI: ${WEBMCP_VERSION}`);
   console.log(`Local MCP URL: ${localServerUrl(config.host, config.port, "/mcp")}`);
 
   if (!runtime) {
@@ -250,20 +250,20 @@ async function runRestart(): Promise<void> {
   const runtime = await fetchRuntimeStatus(config);
   if (!runtime) {
     throw new Error(
-      `No running GPTMCP server found at ${localServerUrl(config.host, config.port, "/mcp")}. Run \`gptmcp serve\` first.`,
+      `No running WebMCP server found at ${localServerUrl(config.host, config.port, "/mcp")}. Run \`webmcp serve\` first.`,
     );
   }
   if (!runtime.execPath || runtime.argv.length === 0) {
-    throw new Error("The running GPTMCP server did not report a restartable process command.");
+    throw new Error("The running WebMCP server did not report a restartable process command.");
   }
 
-  console.log(`Stopping GPTMCP ${runtime.version} (PID ${runtime.pid})...`);
+  console.log(`Stopping WebMCP ${runtime.version} (PID ${runtime.pid})...`);
   stopRuntimeProcess(runtime.pid);
   await waitForRuntimeState(config, false, 8_000);
 
   const replacementEnv = restartEnvironment(runtime);
-  replacementEnv.GPTMCP_ALLOWED_ROOTS = config.allowedRoots.join(",");
-  replacementEnv.GPTMCP_WIDGETS = config.widgets;
+  replacementEnv.WEBMCP_ALLOWED_ROOTS = config.allowedRoots.join(",");
+  replacementEnv.WEBMCP_WIDGETS = config.widgets;
 
   const child = spawn(runtime.execPath, [...runtime.execArgv, ...runtime.argv], {
     cwd: runtime.cwd,
@@ -272,23 +272,23 @@ async function runRestart(): Promise<void> {
     stdio: "ignore",
     windowsHide: true,
   });
-  if (!child.pid) throw new Error("Failed to start the replacement GPTMCP process.");
+  if (!child.pid) throw new Error("Failed to start the replacement WebMCP process.");
   child.unref();
 
   const restarted = await waitForRuntimeState(config, true, 12_000);
   if (!restarted) {
-    throw new Error("GPTMCP stopped, but the replacement server did not become healthy within 12 seconds.");
+    throw new Error("WebMCP stopped, but the replacement server did not become healthy within 12 seconds.");
   }
 
-  console.log(`GPTMCP restarted as PID ${restarted.pid}.`);
+  console.log(`WebMCP restarted as PID ${restarted.pid}.`);
   console.log(`Version: ${restarted.version}`);
   console.log(`Entry: ${restarted.entry}`);
   console.log(`Allowed roots: ${restarted.allowedRoots.join(", ")}`);
 }
 
 async function runDoctor(): Promise<void> {
-  const files = loadDevspaceFiles();
-  console.log(`GPTMCP CLI: ${GPTMCP_VERSION}`);
+  const files = loadWebmcpFiles();
+  console.log(`WebMCP CLI: ${WEBMCP_VERSION}`);
   console.log(`CLI entry: ${process.argv[1] ?? "unknown"}`);
   console.log(`Config dir: ${files.dir}`);
   console.log(`Config file: ${files.configExists ? files.configPath : "missing"}`);
@@ -314,8 +314,8 @@ async function runDoctor(): Promise<void> {
       console.log(`Server version: ${runtime.version}`);
       console.log(`Server entry: ${runtime.entry}`);
       console.log(`Server cwd: ${runtime.cwd}`);
-      if (runtime.version !== GPTMCP_VERSION) {
-        console.log(`Version mismatch: CLI ${GPTMCP_VERSION}, server ${runtime.version}`);
+      if (runtime.version !== WEBMCP_VERSION) {
+        console.log(`Version mismatch: CLI ${WEBMCP_VERSION}, server ${runtime.version}`);
       }
     } else {
       console.log("Server: not reachable");
@@ -325,7 +325,7 @@ async function runDoctor(): Promise<void> {
   }
 }
 
-function printRuntimeStatus(runtime: GPTMCPRuntimeStatus): void {
+function printRuntimeStatus(runtime: WebMCPRuntimeStatus): void {
   console.log(`Server: running (PID ${runtime.pid})`);
   console.log(`Server version: ${runtime.version}`);
   console.log(`Node: ${runtime.nodeVersion}`);
@@ -339,26 +339,26 @@ function printRuntimeStatus(runtime: GPTMCPRuntimeStatus): void {
   console.log(`Artifacts: ${runtime.artifactsEnabled ? "enabled" : "disabled"}`);
   console.log(`State dir: ${runtime.stateDir}`);
   console.log(`Worktree dir: ${runtime.worktreeRoot}`);
-  if (runtime.version !== GPTMCP_VERSION) {
-    console.log(`Version mismatch: CLI ${GPTMCP_VERSION}, server ${runtime.version}`);
+  if (runtime.version !== WEBMCP_VERSION) {
+    console.log(`Version mismatch: CLI ${WEBMCP_VERSION}, server ${runtime.version}`);
   }
 }
 
-async function fetchRuntimeStatus(config: ServerConfig): Promise<GPTMCPRuntimeStatus | undefined> {
+async function fetchRuntimeStatus(config: ServerConfig): Promise<WebMCPRuntimeStatus | undefined> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
     const response = await fetch(localServerUrl(config.host, config.port, "/statusz"), {
-      headers: { "x-gptmcp-owner-token": config.oauth.ownerToken },
+      headers: { "x-webmcp-owner-token": config.oauth.ownerToken },
       signal: controller.signal,
     });
     if (response.status === 404) return undefined;
     if (!response.ok) {
-      throw new Error(`GPTMCP status endpoint returned HTTP ${response.status}.`);
+      throw new Error(`WebMCP status endpoint returned HTTP ${response.status}.`);
     }
     const value = await response.json();
     if (!isRuntimeStatus(value)) {
-      throw new Error("GPTMCP status endpoint returned an invalid payload.");
+      throw new Error("WebMCP status endpoint returned an invalid payload.");
     }
     return value;
   } catch (error) {
@@ -371,11 +371,11 @@ async function fetchRuntimeStatus(config: ServerConfig): Promise<GPTMCPRuntimeSt
   }
 }
 
-function isRuntimeStatus(value: unknown): value is GPTMCPRuntimeStatus {
+function isRuntimeStatus(value: unknown): value is WebMCPRuntimeStatus {
   if (!value || typeof value !== "object") return false;
-  const status = value as Partial<GPTMCPRuntimeStatus>;
+  const status = value as Partial<WebMCPRuntimeStatus>;
   return status.ok === true
-    && status.name === "gptmcp"
+    && status.name === "webmcp"
     && typeof status.version === "string"
     && typeof status.pid === "number"
     && typeof status.cwd === "string"
@@ -396,7 +396,7 @@ function stopRuntimeProcess(pid: number): void {
       windowsHide: true,
     });
     if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`Unable to stop GPTMCP process ${pid}.`);
+    if (result.status !== 0) throw new Error(`Unable to stop WebMCP process ${pid}.`);
     return;
   }
 
@@ -411,7 +411,7 @@ async function waitForRuntimeState(
   config: ServerConfig,
   running: boolean,
   timeoutMs: number,
-): Promise<GPTMCPRuntimeStatus | undefined> {
+): Promise<WebMCPRuntimeStatus | undefined> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const runtime = await fetchRuntimeStatus(config);
@@ -421,12 +421,12 @@ async function waitForRuntimeState(
   }
 
   if (running) return undefined;
-  throw new Error("GPTMCP did not stop within the expected timeout.");
+  throw new Error("WebMCP did not stop within the expected timeout.");
 }
 
 function runConfigCommand(args: string[]): void {
   const [subcommand, key, ...rest] = args;
-  const files = loadDevspaceFiles();
+  const files = loadWebmcpFiles();
 
   if (!subcommand || subcommand === "get") {
     console.log(JSON.stringify(files.config, null, 2));
@@ -458,29 +458,29 @@ function runConfigCommand(args: string[]): void {
         publicBaseUrl: normalizeOptionalPublicBaseUrl(value),
       };
 
-  writeDevspaceConfig(nextConfig);
+  writeWebmcpConfig(nextConfig);
   console.log(`Updated ${files.configPath}`);
 }
 
 function printHelp(): void {
   console.log(
     [
-      "GPTMCP",
+      "WebMCP",
       "",
       "Usage:",
-      "  gptmcp                    Run first-time setup if needed, then start the server",
-      "  gptmcp serve              Start the server",
-      "  gptmcp init               Create or update ~/.gptmcp/config.json and auth.json",
-      "  gptmcp status             Show the running server and effective configuration",
-      "  gptmcp restart            Restart the running server with the same runtime configuration",
-      "  gptmcp doctor             Show config, runtime, dependency, and server diagnostics",
-      "  gptmcp config get        Print persisted config",
-      "  gptmcp config set publicBaseUrl <url|null>",
-      "  gptmcp config set allowedRoots <root1,root2,...>",
-      "  gptmcp -v, --version     Print the installed version",
+      "  webmcp                    Run first-time setup if needed, then start the server",
+      "  webmcp serve              Start the server",
+      "  webmcp init               Create or update ~/.webmcp/config.json and auth.json",
+      "  webmcp status             Show the running server and effective configuration",
+      "  webmcp restart            Restart the running server with the same runtime configuration",
+      "  webmcp doctor             Show config, runtime, dependency, and server diagnostics",
+      "  webmcp config get        Print persisted config",
+      "  webmcp config set publicBaseUrl <url|null>",
+      "  webmcp config set allowedRoots <root1,root2,...>",
+      "  webmcp -v, --version     Print the installed version",
       "",
       "For temporary tunnels:",
-      "  GPTMCP_PUBLIC_BASE_URL=https://example.trycloudflare.com gptmcp serve",
+      "  WEBMCP_PUBLIC_BASE_URL=https://example.trycloudflare.com webmcp serve",
     ].join("\n"),
   );
 }
@@ -490,7 +490,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function printVersion(): void {
-  console.log(GPTMCP_VERSION);
+  console.log(WEBMCP_VERSION);
 }
 
 function normalizeOptionalPublicBaseUrl(value: string): string | null {
@@ -550,11 +550,11 @@ function validatePublicBaseUrl(value: string): string | undefined {
 }
 
 function assertSupportedNode(): void {
-  if (satisfies(process.versions.node, GPTMCP_NODE_RANGE)) return;
+  if (satisfies(process.versions.node, WEBMCP_NODE_RANGE)) return;
 
   throw new Error(
     [
-      `GPTMCP requires Node ${GPTMCP_NODE_RANGE}.`,
+      `WebMCP requires Node ${WEBMCP_NODE_RANGE}.`,
       `Current Node: ${process.version}`,
       "",
       "Install Node 22 LTS or use a version manager such as nvm, fnm, or mise.",
@@ -563,9 +563,9 @@ function assertSupportedNode(): void {
 }
 
 function nodeVersionStatus(): string {
-  return satisfies(process.versions.node, GPTMCP_NODE_RANGE)
-    ? `supported ${GPTMCP_NODE_RANGE}`
-    : `unsupported, requires ${GPTMCP_NODE_RANGE}`;
+  return satisfies(process.versions.node, WEBMCP_NODE_RANGE)
+    ? `supported ${WEBMCP_NODE_RANGE}`
+    : `unsupported, requires ${WEBMCP_NODE_RANGE}`;
 }
 
 class SetupCancelledError extends Error {}

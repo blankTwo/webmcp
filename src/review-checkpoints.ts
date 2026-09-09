@@ -46,7 +46,7 @@ export interface ReviewCheckpointManager {
   }): Promise<ReviewChangesResult>;
 }
 
-const REVIEW_REF_PREFIX = "refs/devspace/review";
+const REVIEW_REF_PREFIX = "refs/webmcp/review";
 
 export function createReviewCheckpointManager(): ReviewCheckpointManager {
   const states = new Map<string, WorkspaceReviewState>();
@@ -216,7 +216,7 @@ function reviewRefs(
 }
 
 async function createWorkingTreeSnapshot(gitRoot: string): Promise<string> {
-  const tempDir = await mkdtemp(join(tmpdir(), "devspace-review-index-"));
+  const tempDir = await mkdtemp(join(tmpdir(), "webmcp-review-index-"));
   const indexPath = join(tempDir, "index");
   const env = checkpointEnv(indexPath);
 
@@ -235,9 +235,9 @@ function checkpointEnv(indexPath: string): NodeJS.ProcessEnv {
   return {
     GIT_INDEX_FILE: indexPath,
     GIT_AUTHOR_NAME: "GPTMCP",
-    GIT_AUTHOR_EMAIL: "devspace@users.noreply.local",
+    GIT_AUTHOR_EMAIL: "webmcp@users.noreply.local",
     GIT_COMMITTER_NAME: "GPTMCP",
-    GIT_COMMITTER_EMAIL: "devspace@users.noreply.local",
+    GIT_COMMITTER_EMAIL: "webmcp@users.noreply.local",
   };
 }
 

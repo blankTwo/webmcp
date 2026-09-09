@@ -1,16 +1,16 @@
 import type { ServerConfig } from "./config.js";
-import { devspaceConfigDir } from "./user-config.js";
-import { GPTMCP_VERSION } from "./version.js";
+import { webmcpConfigDir } from "./user-config.js";
+import { WEBMCP_VERSION } from "./version.js";
 
-export interface GPTMCPHealth {
+export interface WebMCPHealth {
   ok: true;
-  name: "gptmcp";
+  name: "webmcp";
   version: string;
   nodeVersion: string;
   uptimeSeconds: number;
 }
 
-export interface GPTMCPRuntimeStatus extends GPTMCPHealth {
+export interface WebMCPRuntimeStatus extends WebMCPHealth {
   pid: number;
   cwd: string;
   execPath: string;
@@ -41,11 +41,14 @@ export interface GPTMCPRuntimeStatus extends GPTMCPHealth {
   logging: ServerConfig["logging"];
 }
 
-export function createHealthStatus(): GPTMCPHealth {
+export type GPTMCPHealth = WebMCPHealth;
+export type GPTMCPRuntimeStatus = WebMCPRuntimeStatus;
+
+export function createHealthStatus(): WebMCPHealth {
   return {
     ok: true,
-    name: "gptmcp",
-    version: GPTMCP_VERSION,
+    name: "webmcp",
+    version: WEBMCP_VERSION,
     nodeVersion: process.version,
     uptimeSeconds: Math.floor(process.uptime()),
   };
@@ -54,7 +57,7 @@ export function createHealthStatus(): GPTMCPHealth {
 export function createRuntimeStatus(
   config: ServerConfig,
   env: NodeJS.ProcessEnv = process.env,
-): GPTMCPRuntimeStatus {
+): WebMCPRuntimeStatus {
   return {
     ...createHealthStatus(),
     pid: process.pid,
@@ -63,7 +66,7 @@ export function createRuntimeStatus(
     execArgv: [...process.execArgv],
     argv: process.argv.slice(1),
     entry: process.argv[1] ?? "",
-    configDir: devspaceConfigDir(env),
+    configDir: webmcpConfigDir(env),
     host: config.host,
     port: config.port,
     publicBaseUrl: config.publicBaseUrl,
@@ -89,37 +92,37 @@ export function createRuntimeStatus(
 }
 
 export function restartEnvironment(
-  status: GPTMCPRuntimeStatus,
+  status: WebMCPRuntimeStatus,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   return {
     ...baseEnv,
-    GPTMCP_CONFIG_DIR: status.configDir,
+    WEBMCP_CONFIG_DIR: status.configDir,
     HOST: status.host,
     PORT: String(status.port),
-    GPTMCP_PUBLIC_BASE_URL: status.publicBaseUrl,
-    GPTMCP_ALLOWED_ROOTS: status.allowedRoots.join(","),
-    GPTMCP_ALLOWED_HOSTS: status.allowedHosts.join(","),
-    GPTMCP_TOOL_MODE: status.toolMode,
-    GPTMCP_WIDGETS: status.widgets,
-    GPTMCP_STATE_DIR: status.stateDir,
-    GPTMCP_WORKTREE_ROOT: status.worktreeRoot,
-    GPTMCP_ARTIFACTS: status.artifactsEnabled ? "1" : "0",
-    GPTMCP_ARTIFACT_MAX_FILE_BYTES: String(status.artifactMaxFileBytes),
-    GPTMCP_SKILLS: status.skillsEnabled ? "1" : "0",
-    GPTMCP_SKILL_PATHS: status.skillPaths.join(","),
-    GPTMCP_AGENT_DIR: status.agentDir,
-    GPTMCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS: String(status.oauth.accessTokenTtlSeconds),
-    GPTMCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS: String(status.oauth.refreshTokenTtlSeconds),
-    GPTMCP_OAUTH_SCOPES: status.oauth.scopes.join(","),
-    GPTMCP_OAUTH_ALLOWED_REDIRECT_HOSTS: status.oauth.allowedRedirectHosts.join(","),
-    GPTMCP_LOG_LEVEL: status.logging.level,
-    GPTMCP_LOG_FORMAT: status.logging.format,
-    GPTMCP_LOG_REQUESTS: status.logging.requests ? "1" : "0",
-    GPTMCP_LOG_ASSETS: status.logging.assets ? "1" : "0",
-    GPTMCP_LOG_TOOL_CALLS: status.logging.toolCalls ? "1" : "0",
-    GPTMCP_LOG_SHELL_COMMANDS: status.logging.shellCommands ? "1" : "0",
-    GPTMCP_TRUST_PROXY: status.logging.trustProxy ? "1" : "0",
+    WEBMCP_PUBLIC_BASE_URL: status.publicBaseUrl,
+    WEBMCP_ALLOWED_ROOTS: status.allowedRoots.join(","),
+    WEBMCP_ALLOWED_HOSTS: status.allowedHosts.join(","),
+    WEBMCP_TOOL_MODE: status.toolMode,
+    WEBMCP_WIDGETS: status.widgets,
+    WEBMCP_STATE_DIR: status.stateDir,
+    WEBMCP_WORKTREE_ROOT: status.worktreeRoot,
+    WEBMCP_ARTIFACTS: status.artifactsEnabled ? "1" : "0",
+    WEBMCP_ARTIFACT_MAX_FILE_BYTES: String(status.artifactMaxFileBytes),
+    WEBMCP_SKILLS: status.skillsEnabled ? "1" : "0",
+    WEBMCP_SKILL_PATHS: status.skillPaths.join(","),
+    WEBMCP_AGENT_DIR: status.agentDir,
+    WEBMCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS: String(status.oauth.accessTokenTtlSeconds),
+    WEBMCP_OAUTH_REFRESH_TOKEN_TTL_SECONDS: String(status.oauth.refreshTokenTtlSeconds),
+    WEBMCP_OAUTH_SCOPES: status.oauth.scopes.join(","),
+    WEBMCP_OAUTH_ALLOWED_REDIRECT_HOSTS: status.oauth.allowedRedirectHosts.join(","),
+    WEBMCP_LOG_LEVEL: status.logging.level,
+    WEBMCP_LOG_FORMAT: status.logging.format,
+    WEBMCP_LOG_REQUESTS: status.logging.requests ? "1" : "0",
+    WEBMCP_LOG_ASSETS: status.logging.assets ? "1" : "0",
+    WEBMCP_LOG_TOOL_CALLS: status.logging.toolCalls ? "1" : "0",
+    WEBMCP_LOG_SHELL_COMMANDS: status.logging.shellCommands ? "1" : "0",
+    WEBMCP_TRUST_PROXY: status.logging.trustProxy ? "1" : "0",
   };
 }
 

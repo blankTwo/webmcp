@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    gptmcp_console_lib::run();
+    webmcp_console_lib::run();
 }

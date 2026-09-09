@@ -539,7 +539,7 @@ function App() {
   const [tunnelActionBusy, setTunnelActionBusy] = useState(false);
   const [tunnelFeedback, setTunnelFeedback] = useState<string | null>(null);
   const [showTunnelLogs, setShowTunnelLogs] = useState(false);
-  const [gptmcpConfig, setGptmcpConfig] = useState<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null } | null>(null);
+  const [webmcpConfig, setWebmcpConfig] = useState<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null } | null>(null);
   const [customDomainInput, setCustomDomainInput] = useState<string>("");
   const [domainSaving, setDomainSaving] = useState(false);
   const [domainFeedback, setDomainFeedback] = useState<string | null>(null);
@@ -579,7 +579,7 @@ function App() {
 
   const updateServiceLogs = useCallback(async () => {
     try {
-      const logs = await invoke<string[]>("get_gptmcp_service_logs");
+      const logs = await invoke<string[]>("get_webmcp_service_logs");
       setServiceLogs(logs);
     } catch {
       // ignore
@@ -588,7 +588,7 @@ function App() {
 
   const handleClearServiceLogs = async () => {
     try {
-      await invoke("clear_gptmcp_service_logs");
+      await invoke("clear_webmcp_service_logs");
       setServiceLogs([]);
     } catch {
       // ignore
@@ -620,10 +620,10 @@ function App() {
     }
   }, []);
 
-  const updateGptmcpConfig = useCallback(async () => {
+  const updateWebmcpConfig = useCallback(async () => {
     try {
-      const config = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>("get_gptmcp_config");
-      setGptmcpConfig(config);
+      const config = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>("get_webmcp_config");
+      setWebmcpConfig(config);
       if (config.publicBaseUrl) {
         setCustomDomainInput(config.publicBaseUrl);
       }
@@ -637,8 +637,8 @@ function App() {
     setDomainFeedback("正在保存公网域名配置并重启服务…");
     try {
       const targetUrl = urlToSave !== undefined ? urlToSave : (customDomainInput.trim() ? customDomainInput.trim() : null);
-      const res = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>("set_gptmcp_public_url", { url: targetUrl });
-      setGptmcpConfig(res);
+      const res = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>("set_webmcp_public_url", { url: targetUrl });
+      setWebmcpConfig(res);
       setDomainFeedback(targetUrl ? `固定公网域名已保存并生效: ${targetUrl}` : "已清除公网域名 (恢复本地 127.0.0.1 模式)");
       setShowDomainEditor(false);
       await refreshAll();
@@ -684,7 +684,7 @@ function App() {
       await updateStatus();
       await updateTunnelStatus();
       await updateProjectPathInfo();
-      await updateGptmcpConfig();
+      await updateWebmcpConfig();
     };
     void runUpdate();
     const timer = window.setInterval(() => void runUpdate(), 4_000);
@@ -692,7 +692,7 @@ function App() {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [updateTunnelStatus, updateProjectPathInfo, updateGptmcpConfig]);
+  }, [updateTunnelStatus, updateProjectPathInfo, updateWebmcpConfig]);
 
   useEffect(() => {
     if (!workspace) {
@@ -763,9 +763,9 @@ function App() {
   const handleStartService = async () => {
     setServiceActionBusy(true);
     setShowServiceLogs(true);
-    setServiceFeedback("正在启动 GPTMCP 后台服务…");
+    setServiceFeedback("正在启动 WebMCP 后台服务…");
     try {
-      const result = await invoke<ServiceControlResult>("start_gptmcp_service");
+      const result = await invoke<ServiceControlResult>("start_webmcp_service");
       setServiceFeedback(result.message);
       await updateServiceLogs();
       await refreshAll();
@@ -779,12 +779,12 @@ function App() {
   };
 
   const handleStopService = async () => {
-    if (!window.confirm("确定停止 GPTMCP 后台服务吗？这将中断当前连接。")) return;
+    if (!window.confirm("确定停止 WebMCP 后台服务吗？这将中断当前连接。")) return;
     setServiceActionBusy(true);
     setShowServiceLogs(true);
-    setServiceFeedback("正在停止 GPTMCP 后台服务…");
+    setServiceFeedback("正在停止 WebMCP 后台服务…");
     try {
-      const result = await invoke<ServiceControlResult>("stop_gptmcp_service");
+      const result = await invoke<ServiceControlResult>("stop_webmcp_service");
       setServiceFeedback(result.message);
       await updateServiceLogs();
       await refreshAll();
@@ -800,9 +800,9 @@ function App() {
   const handleRestartService = async () => {
     setServiceActionBusy(true);
     setShowServiceLogs(true);
-    setServiceFeedback("正在重启 GPTMCP 后台服务…");
+    setServiceFeedback("正在重启 WebMCP 后台服务…");
     try {
-      const result = await invoke<ServiceControlResult>("restart_gptmcp_service");
+      const result = await invoke<ServiceControlResult>("restart_webmcp_service");
       setServiceFeedback(result.message);
       await updateServiceLogs();
       await refreshAll();
@@ -887,7 +887,7 @@ function App() {
   };
 
   const handleSelectDrive = async (drive: DriveCandidate) => {
-    const target = drive.projectPath || `${drive.drive}devspace-main`;
+    const target = drive.projectPath || `${drive.drive}webmcp-main`;
     setCustomPathInput(target);
     await handleSaveCustomPath(target);
   };
@@ -958,7 +958,7 @@ function App() {
       <header className="monitor-titlebar" data-tauri-drag-region>
         <div className="monitor-brand" data-tauri-drag-region>
           <span className="monitor-brand-mark"><Code2 size={16} /></span>
-          <strong>GPTMCP Console</strong>
+          <strong>WebMCP Console</strong>
           <small>v{serverVersion === "—" ? clientStatus?.version ?? "1.0" : serverVersion}</small>
         </div>
         <div className="monitor-window-actions">
@@ -1004,7 +1004,7 @@ function App() {
                 <div className="monitor-sidebar-empty">
                   <Folder size={24} color="var(--monitor-muted)" />
                   <span>暂无已连接工作区</span>
-                  <small>通过 GPTMCP 打开或点击上方加号添加本地项目</small>
+                  <small>通过 WebMCP 打开或点击上方加号添加本地项目</small>
                 </div>
               )}
               {loading && !workspaces.length && (
@@ -1115,7 +1115,7 @@ function App() {
               <span className={classNames("monitor-live-dot", isServiceOnline && "online")} />
               <div>
                 <div>
-                  <strong>{workspace?.name ?? "DevSpace"}</strong>
+                  <strong>{workspace?.name ?? "WebMCP"}</strong>
                   <span className={classNames("monitor-status-pill", isServiceOnline ? "online" : "offline")}>
                     {isServiceOnline ? "在线运行中" : "服务已停止"}
                   </span>
@@ -1229,7 +1229,7 @@ function App() {
                     <div>
                       <AlertTriangle size={18} color="var(--monitor-amber)" />
                       <div>
-                        <strong>GPTMCP 本地服务未运行</strong>
+                        <strong>WebMCP 本地服务未运行</strong>
                         <span>启动后台守护服务以监听 MCP 工具调用与遥测数据。</span>
                       </div>
                     </div>
@@ -1294,7 +1294,7 @@ function App() {
                   <div className="monitor-empty-state">
                     <Activity size={32} />
                     <strong>{workspace ? "当前筛选条件下暂无日志" : "暂无工作区数据"}</strong>
-                    <span>{workspace ? "尝试清空搜索框或重置分类筛选。" : "先在 GPTMCP 中打开工作区以查看实时动态。"}</span>
+                    <span>{workspace ? "尝试清空搜索框或重置分类筛选。" : "先在 WebMCP 中打开工作区以查看实时动态。"}</span>
                   </div>
                 )}
                 {loading && !filteredEvents.length && isServiceOnline && (
@@ -1364,7 +1364,7 @@ function App() {
                 <span className="monitor-page-icon"><ShieldCheck size={20} /></span>
                 <div>
                   <strong>环境检查与服务主控</strong>
-                  <small>GPTMCP 本地服务生命周期管理、隧道状态与运行配置详情</small>
+                  <small>WebMCP 本地服务生命周期管理、隧道状态与运行配置详情</small>
                 </div>
               </div>
 
@@ -1376,7 +1376,7 @@ function App() {
                       <Server size={22} />
                     </span>
                     <div className="monitor-service-manager-title">
-                      <strong>GPTMCP 核心服务 ({isServiceOnline ? "运行中" : "已停止"})</strong>
+                      <strong>WebMCP 核心服务 ({isServiceOnline ? "运行中" : "已停止"})</strong>
                       <span>
                         {isServiceOnline
                           ? `服务监听在 ${clientStatus?.localUrl ?? "http://127.0.0.1:7676"}`
@@ -1449,7 +1449,7 @@ function App() {
                     <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--monitor-panel-soft)", borderBottom: "1px solid var(--monitor-line)" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <TerminalSquare size={14} color="var(--monitor-blue)" />
-                        <strong>GPTMCP 核心服务生命周期与启停日志</strong>
+                        <strong>WebMCP 核心服务生命周期与启停日志</strong>
                         <span style={{ fontSize: 11, color: "var(--monitor-text-soft)" }}>
                           {isServiceOnline ? "状态: 7676 端口运行中" : "状态: 服务已停止"}
                         </span>
@@ -1593,7 +1593,7 @@ function App() {
                       title="配置自定义固定公网域名 (如自有服务器反代域名)"
                     >
                       <Settings size={12} />
-                      {showDomainEditor ? "收起域名设置" : (gptmcpConfig?.publicBaseUrl ? "修改固定公网域名" : "配置固定公网域名")}
+                      {showDomainEditor ? "收起域名设置" : (webmcpConfig?.publicBaseUrl ? "修改固定公网域名" : "配置固定公网域名")}
                     </button>
                   </div>
                   <div className="monitor-endpoint-input-wrap">
@@ -1624,7 +1624,7 @@ function App() {
                           type="text"
                           className="monitor-endpoint-input"
                           style={{ flex: 1, padding: "6px 10px", fontSize: 13, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
-                          placeholder="例如: https://devspace.do3bvk.cn"
+                          placeholder="例如: https://webmcp.do3bvk.cn"
                           value={customDomainInput}
                           onChange={(e) => setCustomDomainInput(e.target.value)}
                         />
@@ -1635,7 +1635,7 @@ function App() {
                         >
                           {domainSaving ? "保存中…" : "保存并生效"}
                         </button>
-                        {gptmcpConfig?.publicBaseUrl && (
+                        {webmcpConfig?.publicBaseUrl && (
                           <button
                             className="service-action-btn stop"
                             disabled={domainSaving}
@@ -1721,7 +1721,7 @@ function App() {
                       <HardDrive size={22} />
                     </span>
                     <div className="monitor-service-manager-title">
-                      <strong>GPTMCP 主程序根路径与盘符选择</strong>
+                      <strong>WebMCP 主程序根路径与盘符选择</strong>
                       <span>
                         当前生效路径: <code className="mono" style={{ color: "var(--monitor-blue)", fontSize: 12 }}>{projectPathInfo?.currentRoot ?? "自动探测中…"}</code>
                       </span>
@@ -1750,7 +1750,7 @@ function App() {
                           key={drive.drive}
                           className={classNames("monitor-drive-pill", isSelected && "selected", drive.hasProject && "has-project")}
                           onClick={() => void handleSelectDrive(drive)}
-                          title={drive.hasProject ? `在 ${drive.drive} 已检测到 devspace-main 项目` : `选择 ${drive.drive} 盘`}
+                          title={drive.hasProject ? `在 ${drive.drive} 已检测到 webmcp-main 项目` : `选择 ${drive.drive} 盘`}
                         >
                           <HardDrive size={12} />
                           <strong>{drive.drive}</strong>
@@ -1767,7 +1767,7 @@ function App() {
                     className="monitor-custom-path-input"
                     value={customPathInput}
                     onChange={(e) => setCustomPathInput(e.target.value)}
-                    placeholder="输入或粘贴项目绝对路径，例如: D:\devspace-main 或 E:\gptmcp"
+                    placeholder="输入或粘贴项目绝对路径，例如: D:\webmcp-main 或 E:\webmcp"
                   />
                   <button
                     className="monitor-service-quick-btn primary"
@@ -1795,7 +1795,7 @@ function App() {
                 <Metric label="进程 PID" value={runtime?.pid ?? "—"} />
                 <Metric label="运行时长" value={formatUptime(runtime?.uptimeSeconds)} />
                 <Metric label="Node.js 版本" value={runtime?.nodeVersion ?? "—"} />
-                <Metric label="GPTMCP 版本" value={runtime?.version ?? clientStatus?.version ?? "—"} />
+                <Metric label="WebMCP 版本" value={runtime?.version ?? clientStatus?.version ?? "—"} />
               </div>
 
               <div className="monitor-info-list">

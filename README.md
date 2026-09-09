@@ -1,24 +1,24 @@
 <p align="center">
   <picture>
-    <img src="https://raw.githubusercontent.com/Waishnav/gptmcp/main/docs/assets/devspace-logo-light.png" alt="GPTMCP logo" width="140">
+    <img src="https://raw.githubusercontent.com/Waishnav/webmcp/main/docs/assets/webmcp-logo-light.png" alt="WebMCP logo" width="140">
   </picture>
 </p>
 
-<h1 align="center">GPTMCP</h1>
+<h1 align="center">WebMCP</h1>
 
 <p align="center">Bring a Codex-style coding workflow to ChatGPT.</p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/gptmcp"><img alt="npm" src="https://img.shields.io/npm/v/gptmcp?style=flat-square" /></a>
-  <a href="https://github.com/Waishnav/gptmcp/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Waishnav/gptmcp/ci.yml?style=flat-square&branch=main" /></a>
-  <a href="https://github.com/Waishnav/gptmcp/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/npm/l/gptmcp?style=flat-square" /></a>
+  <a href="https://www.npmjs.com/package/webmcp"><img alt="npm" src="https://img.shields.io/npm/v/webmcp?style=flat-square" /></a>
+  <a href="https://github.com/Waishnav/webmcp/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Waishnav/webmcp/ci.yml?style=flat-square&branch=main" /></a>
+  <a href="https://github.com/Waishnav/webmcp/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/npm/l/webmcp?style=flat-square" /></a>
 </p>
 
-[![GPTMCP connected to ChatGPT](https://raw.githubusercontent.com/Waishnav/gptmcp/main/docs/assets/devspace-screenshot.png)](https://raw.githubusercontent.com/Waishnav/gptmcp/main/docs/assets/devspace-screenshot.png)
+[![WebMCP connected to ChatGPT](https://raw.githubusercontent.com/Waishnav/webmcp/main/docs/assets/webmcp-screenshot.png)](https://raw.githubusercontent.com/Waishnav/webmcp/main/docs/assets/webmcp-screenshot.png)
 
 **Give ChatGPT a secure connection to your own machine and Turn ChatGPT into Codex**
 
-GPTMCP is a self-hosted MCP server that lets ChatGPT read, edit, search, and run code in your real local projects — your files, your tools, your terminal — without uploading anything to a third party. You run it on your machine, expose it through a tunnel you control, and approve the connection with a password only you have.
+WebMCP is a self-hosted MCP server that lets ChatGPT read, edit, search, and run code in your real local projects — your files, your tools, your terminal — without uploading anything to a third party. You run it on your machine, expose it through a tunnel you control, and approve the connection with a password only you have.
 
 ## Sponsors and Special Thanks
 
@@ -51,37 +51,37 @@ GPTMCP is a self-hosted MCP server that lets ChatGPT read, edit, search, and run
 </table>
 
 <p>
-  GPTMCP is open to new sponsors.
+  WebMCP is open to new sponsors.
   <a href="https://x.com/wshxnv">Get in touch to become one.</a>
 </p>
 
 ## Installation
 
-GPTMCP requires Node `>=22.19 <27`.
+WebMCP requires Node `>=22.19 <27`.
 
-Install the GPTMCP CLI:
+Install the WebMCP CLI:
 
 ```bash
-npm install -g gptmcp
+npm install -g webmcp
 ```
 
 Then initialize and start the server:
 
 ```bash
-gptmcp init
-gptmcp serve
+webmcp init
+webmcp serve
 ```
 
 Or run it without a global install:
 
 ```bash
-npx gptmcp init
-npx gptmcp serve
+npx webmcp init
+npx webmcp serve
 ```
 
-During setup, GPTMCP asks for:
+During setup, WebMCP asks for:
 
-- the local project folders ChatGPT is allowed to open through GPTMCP
+- the local project folders ChatGPT is allowed to open through WebMCP
 - the local port, usually `7676`
 - your public HTTPS base URL from Cloudflare Tunnel, ngrok, Pinggy, Tailscale Funnel, or
   another reverse proxy
@@ -94,11 +94,11 @@ https://your-tunnel-host.example.com
 
 You will configure your MCP client with the public `/mcp` URL after setup.
 
-When the client connects, GPTMCP opens an Owner password approval page. Enter
-the Owner password printed by `gptmcp init`. It is also stored in:
+When the client connects, WebMCP opens an Owner password approval page. Enter
+the Owner password printed by `webmcp init`. It is also stored in:
 
 ```text
-~/.gptmcp/auth.json
+~/.webmcp/auth.json
 ```
 
 Keep that password private.
@@ -118,10 +118,10 @@ https://your-tunnel-host.example.com/mcp
 ```
 
 > [!NOTE]
-> Using GPTMCP as an MCP connector isn't against OpenAI's Usage Policies — it's
+> Using WebMCP as an MCP connector isn't against OpenAI's Usage Policies — it's
 > a standard custom App/connector setup, and writing or running code isn't a
 > restricted use case. But your account is governed by your usage, not by
-> GPTMCP. Don't point it at anything that would violate your provider's terms.
+> WebMCP. Don't point it at anything that would violate your provider's terms.
 > Used normally, you're fine. (Based on OpenAI's Usage Policies and Service Terms
 > as of June 2026.)
 
@@ -131,7 +131,7 @@ Once connected, ChatGPT can open one of your approved project folders as a
 workspace. From there, it can inspect the repo, make scoped edits, run commands,
 and show you what changed.
 
-GPTMCP gives ChatGPT tools to:
+WebMCP gives ChatGPT tools to:
 
 - read one or several files, write or edit files, and apply multi-file patches inside the opened workspace
 - explore source structure with `code_explore`, then search code and inspect directories with dedicated read-only tools
@@ -140,11 +140,11 @@ GPTMCP gives ChatGPT tools to:
 - use isolated Git worktrees for parallel coding sessions
 - follow project instructions from `AGENTS.md` and `CLAUDE.md`
 - discover local skills from your skill folders
-- keep rich tool details in GPTMCP Console without adding per-tool iframe cards to ChatGPT
+- keep rich tool details in WebMCP Console without adding per-tool iframe cards to ChatGPT
 
 ## Mental Model
 
-GPTMCP is remote access to selected local folders.
+WebMCP is remote access to selected local folders.
 
 You decide which roots are allowed. The MCP client still has powerful local
 capabilities inside an opened workspace, including shell execution. Treat a
@@ -153,14 +153,14 @@ connected client like a trusted coding partner with access to your machine.
 For a normal ChatGPT coding session:
 
 1. Start your tunnel.
-2. Run `gptmcp serve`.
+2. Run `webmcp serve`.
 3. Connect the MCP client to your public `/mcp` URL.
 4. Approve the connection with the Owner password.
 5. Ask ChatGPT to open a project inside one of your allowed roots.
 
 ## Platform Support
 
-GPTMCP supports Linux, macOS, and Windows environments with a Bash-compatible
+WebMCP supports Linux, macOS, and Windows environments with a Bash-compatible
 shell.
 
 | Platform                                          | Status            | Notes                                          |
@@ -173,9 +173,9 @@ shell.
 Use the built-in operational commands to inspect or restart the local server:
 
 ```bash
-gptmcp status
-gptmcp doctor
-gptmcp restart
+webmcp status
+webmcp doctor
+webmcp restart
 ```
 
 `status` reports the running PID, version, entry point, effective roots, tool mode,
@@ -186,16 +186,16 @@ re-deriving it from the current shell directory.
 The public `GET /healthz` endpoint only exposes basic health, version, Node, and
 uptime information. Detailed local runtime data is available from `GET /statusz`
 only when the request includes the configured Owner password in the
-`x-gptmcp-owner-token` header.
+`x-webmcp-owner-token` header.
 
 ## Documentation
 
-- [Setup Guide](https://github.com/Waishnav/gptmcp/blob/main/docs/setup.md)
-- [ChatGPT Coding Workflow](https://github.com/Waishnav/gptmcp/blob/main/docs/chatgpt-coding-workflow.md)
-- [Configuration Reference](https://github.com/Waishnav/gptmcp/blob/main/docs/configuration.md)
-- [Native File Download](https://github.com/Waishnav/gptmcp/blob/main/docs/artifact-exchange.md)
-- [Security Model](https://github.com/Waishnav/gptmcp/blob/main/docs/security.md)
-- [Troubleshooting Gotchas](https://github.com/Waishnav/gptmcp/blob/main/docs/gotchas.md)
+- [Setup Guide](https://github.com/Waishnav/webmcp/blob/main/docs/setup.md)
+- [ChatGPT Coding Workflow](https://github.com/Waishnav/webmcp/blob/main/docs/chatgpt-coding-workflow.md)
+- [Configuration Reference](https://github.com/Waishnav/webmcp/blob/main/docs/configuration.md)
+- [Native File Download](https://github.com/Waishnav/webmcp/blob/main/docs/artifact-exchange.md)
+- [Security Model](https://github.com/Waishnav/webmcp/blob/main/docs/security.md)
+- [Troubleshooting Gotchas](https://github.com/Waishnav/webmcp/blob/main/docs/gotchas.md)
 
 ## Philosophy
 
@@ -208,7 +208,7 @@ orchestrate sub-agents that set up the right loops for us.
 
 We are not there yet.
 
-GPTMCP is one attempt to fast-forward that future: a way for MCP-capable
+WebMCP is one attempt to fast-forward that future: a way for MCP-capable
 hosts like ChatGPT and Claude to work directly with local project files through
 explicit, inspectable tools.
 
@@ -252,7 +252,7 @@ This year, I began my journey to build a one-person, multi-agent company capable
 
 ## Local Development
 
-For working on GPTMCP itself:
+For working on WebMCP itself:
 
 ```bash
 npm install --include=dev
