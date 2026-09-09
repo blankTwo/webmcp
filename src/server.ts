@@ -1,3 +1,5 @@
+import { ensureWindowsHide } from "./windows-hide.js";
+ensureWindowsHide();
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile as readTextFile, writeFile as writeTextFile, realpath } from "node:fs/promises";

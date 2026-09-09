@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { ensureWindowsHide } from "./windows-hide.js";
+ensureWindowsHide();
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { stdin as input, stdout as output } from "node:process";
