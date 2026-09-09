@@ -496,7 +496,7 @@ function App() {
   const [serviceFeedback, setServiceFeedback] = useState<string | null>(null);
   const [serviceLogs, setServiceLogs] = useState<string[]>([]);
   const [showServiceLogs, setShowServiceLogs] = useState(false);
-  const serviceLogsEndRef = useRef<HTMLPreElement | null>(null);
+  const serviceLogsEndRef = useRef<HTMLDivElement | null>(null);
 
   // Cloudflare Tunnel & Custom Public Domain management states
   const [tunnelInfo, setTunnelInfo] = useState<CloudflaredTunnelInfo | null>(null);
@@ -1582,8 +1582,8 @@ function App() {
                 )}
 
                 {showServiceLogs && (
-                  <div className="monitor-info-panel" style={{ marginTop: 12 }}>
-                    <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div className="monitor-info-panel" style={{ marginTop: 12, border: "1px solid var(--monitor-line)" }}>
+                    <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--monitor-panel-soft)", borderBottom: "1px solid var(--monitor-line)" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <TerminalSquare size={14} color="var(--monitor-blue)" />
                         <strong>GPTMCP 核心服务控制台 / 启动 / 重启日志</strong>
@@ -1610,24 +1610,38 @@ function App() {
                         </button>
                       </div>
                     </header>
-                    <pre
+                    <div
                       ref={serviceLogsEndRef}
                       style={{
-                        maxHeight: 240,
+                        maxHeight: 260,
                         overflowY: "auto",
-                        background: "var(--monitor-bg)",
-                        padding: "10px 12px",
-                        borderRadius: 6,
+                        background: "#090d16",
+                        color: "#e2e8f0",
+                        padding: "12px 14px",
                         fontSize: 12,
-                        lineHeight: 1.5,
-                        fontFamily: "monospace",
-                        margin: "8px 0 0 0",
-                        whiteSpace: "pre-wrap",
-                        wordBreak: "break-all"
+                        lineHeight: 1.6,
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                        boxShadow: "inset 0 2px 4px rgba(0,0,0,0.5)"
                       }}
                     >
-                      {serviceLogs?.length ? serviceLogs.join("\n") : "暂无服务日志。点击「启动服务」或「重启服务」将实时输出进程生命周期日志。"}
-                    </pre>
+                      {serviceLogs?.length ? (
+                        serviceLogs.map((line, idx) => {
+                          let color = "#e2e8f0";
+                          if (line.includes("✅")) color = "#34d399";
+                          else if (line.includes("❌") || line.includes("异常") || line.includes("错误") || line.includes("Fail")) color = "#f87171";
+                          else if (line.includes("⚠️") || line.includes("警告")) color = "#fbbf24";
+                          else if (line.includes("[构建]")) color = "#60a5fa";
+                          else if (line.includes("🔄") || line.includes("正在") || line.includes("准备")) color = "#93c5fd";
+                          return (
+                            <div key={idx} style={{ color, padding: "1px 0", wordBreak: "break-all" }}>
+                              {line}
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div style={{ color: "#64748b" }}>暂无服务日志。点击「启动服务」或「重启服务」将实时输出进程生命周期日志。</div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1787,13 +1801,30 @@ function App() {
                 </div>
 
                 {showTunnelLogs && (
-                  <div className="monitor-info-panel">
-                    <header>
-                      <TerminalSquare size={14} color="var(--monitor-blue)" />
-                      <strong>cloudflared 实时日志</strong>
-                      <span>PID: {tunnelInfo?.pid ?? "—"}</span>
+                  <div className="monitor-info-panel" style={{ marginTop: 12, border: "1px solid var(--monitor-line)" }}>
+                    <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--monitor-panel-soft)", borderBottom: "1px solid var(--monitor-line)" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <TerminalSquare size={14} color="var(--monitor-blue)" />
+                        <strong>cloudflared 实时日志</strong>
+                        <span>PID: {tunnelInfo?.pid ?? "—"}</span>
+                      </div>
                     </header>
-                    <pre style={{ maxHeight: 220, overflowY: "auto" }}>
+                    <pre
+                      style={{
+                        maxHeight: 240,
+                        overflowY: "auto",
+                        background: "#090d16",
+                        color: "#e2e8f0",
+                        padding: "12px 14px",
+                        fontSize: 12,
+                        lineHeight: 1.6,
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                        margin: 0,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-all",
+                        boxShadow: "inset 0 2px 4px rgba(0,0,0,0.5)"
+                      }}
+                    >
                       {tunnelInfo?.logs?.length ? tunnelInfo.logs.join("\n") : "暂无隧道日志输出。"}
                     </pre>
                   </div>
