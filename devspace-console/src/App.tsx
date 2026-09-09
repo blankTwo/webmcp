@@ -276,6 +276,60 @@ function actionKindBadge(event: LogEvent) {
   }
 }
 
+function getEffectiveCommand(event: LogEvent): string {
+  if (event.command) return event.command;
+  const card = event.consoleUi?.card as Record<string, any> | undefined;
+  const summary = card?.summary as Record<string, any> | undefined;
+  const targetPath = event.target || (event.params?.path as string) || (event.files?.[0]) || "";
+
+  if (event.tool === "grep") {
+    const pattern = summary?.pattern || card?.pattern || (event.params?.pattern as string) || "";
+    const scope = summary?.scope || targetPath || ".";
+    return `grep -rn "${pattern}" ${scope}`;
+  }
+  if (event.tool === "glob") {
+    const pattern = summary?.pattern || card?.pattern || (event.params?.pattern as string) || "*";
+    const scope = targetPath || ".";
+    return `find ${scope} -name "${pattern}"`;
+  }
+  if (event.tool === "read") {
+    const offset = summary?.offset ?? (event.params?.offset as number) ?? 1;
+    const limit = summary?.limit ?? (event.params?.limit as number);
+    if (offset > 1 || limit) {
+      return `read --offset ${offset} --limit ${limit ?? 400} ${targetPath}`;
+    }
+    return `read ${targetPath}`;
+  }
+  if (event.tool === "ls" || event.tool === "list_dir") {
+    return `ls -la ${targetPath || "."}`;
+  }
+  if (event.tool === "find_symbol") {
+    const name = card?.name || event.symbolContext?.name || (event.params?.name as string) || "";
+    return `find_symbol --name "${name}" ${targetPath ? `--path ${targetPath}` : ""}`.trim();
+  }
+  if (event.tool === "replace_symbol_body") {
+    const sym = event.symbolContext?.name || (event.params?.symbol as string) || "";
+    return `replace_symbol_body --symbol "${sym}" --path ${targetPath}`;
+  }
+  if (event.tool === "insert_symbol") {
+    const sym = event.symbolContext?.name || (event.params?.symbol as string) || "";
+    return `insert_symbol --target "${sym}" --path ${targetPath}`;
+  }
+  if (event.tool === "apply_patch") {
+    return `apply_patch ${targetPath ? `(${targetPath})` : ""}`;
+  }
+  if (event.tool === "write") {
+    return `write ${targetPath}`;
+  }
+  if (event.tool === "edit") {
+    return `edit ${targetPath}`;
+  }
+  if (event.tool === "open_workspace") {
+    return `open_workspace ${targetPath}`;
+  }
+  return "";
+}
+
 function ExpandedEvent({
   event,
 }: {
@@ -283,19 +337,42 @@ function ExpandedEvent({
 }) {
   const [cmdCopied, setCmdCopied] = useState(false);
   const [outCopied, setOutCopied] = useState(false);
-  const output = [...(event.stdout ?? []), ...(event.stderr ?? [])].join("\n");
+  const effectiveCmd = getEffectiveCommand(event);
+  const card = event.consoleUi?.card as Record<string, any> | undefined;
+  const cardSummary = card?.summary as Record<string, any> | undefined;
   const params = event.params as Record<string, any> | undefined;
 
+  let effectiveOutput = [...(event.stdout ?? []), ...(event.stderr ?? [])].join("\n").trim();
+  if (!effectiveOutput && card?.payload) {
+    const payload = card.payload as Record<string, any>;
+    if (Array.isArray(payload.content)) {
+      effectiveOutput = payload.content
+        .map((c: any) => (typeof c === "string" ? c : c?.text || JSON.stringify(c, null, 2)))
+        .join("\n")
+        .trim();
+    } else if (Array.isArray(payload.files)) {
+      effectiveOutput = payload.files
+        .map((f: any) => {
+          const fileText = Array.isArray(f.content)
+            ? f.content.map((c: any) => (typeof c === "string" ? c : c?.text || "")).join("\n")
+            : (f.content || "");
+          return `// File: ${f.path}\n${fileText}`;
+        })
+        .join("\n\n")
+        .trim();
+    }
+  }
+
   const copyCommand = async () => {
-    if (!event.command) return;
-    await navigator.clipboard.writeText(event.command);
+    if (!effectiveCmd) return;
+    await navigator.clipboard.writeText(effectiveCmd);
     setCmdCopied(true);
     setTimeout(() => setCmdCopied(false), 1500);
   };
 
   const copyOutput = async () => {
-    if (!output) return;
-    await navigator.clipboard.writeText(output);
+    if (!effectiveOutput) return;
+    await navigator.clipboard.writeText(effectiveOutput);
     setOutCopied(true);
     setTimeout(() => setOutCopied(false), 1500);
   };
@@ -320,7 +397,7 @@ function ExpandedEvent({
         </div>
       </header>
 
-      {(event.diffStats || event.symbolContext || event.diagnosticsState) && (
+      {(event.diffStats || event.symbolContext || event.diagnosticsState || cardSummary) && (
         <div className="monitor-expanded-summary">
           {event.symbolContext && (
             <div>
@@ -353,19 +430,49 @@ function ExpandedEvent({
               </strong>
             </div>
           )}
+          {cardSummary?.pattern && (
+            <div>
+              <span>检索表达式</span>
+              <strong className="mono ellipsis" title={cardSummary.pattern}>{cardSummary.pattern}</strong>
+            </div>
+          )}
+          {cardSummary?.scope && (
+            <div>
+              <span>检索范围</span>
+              <strong className="mono ellipsis" title={cardSummary.scope}>{cardSummary.scope}</strong>
+            </div>
+          )}
+          {typeof cardSummary?.lines === "number" && (
+            <div>
+              <span>检索命中行数</span>
+              <strong className="mono">{cardSummary.lines} 行匹配</strong>
+            </div>
+          )}
+          {typeof cardSummary?.characters === "number" && (
+            <div>
+              <span>数据字符量</span>
+              <strong className="mono">{cardSummary.characters} 字符</strong>
+            </div>
+          )}
+          {typeof cardSummary?.offset === "number" && (
+            <div>
+              <span>读取行范围</span>
+              <strong className="mono">L{cardSummary.offset} - L{(cardSummary.offset + (cardSummary.limit ?? 400) - 1)}</strong>
+            </div>
+          )}
         </div>
       )}
 
-      {event.command && (
+      {effectiveCmd && (
         <section className="monitor-expanded-section">
           <div className="monitor-section-title">
-            <span>执行命令</span>
+            <span>{event.command ? "执行终端指令" : "操作指令与参数"}</span>
             <button onClick={() => void copyCommand()}>
               {cmdCopied ? <Check size={12} color="var(--monitor-green)" /> : <Copy size={12} />}
               {cmdCopied ? "已复制" : "复制"}
             </button>
           </div>
-          <pre>{event.command}</pre>
+          <pre>{effectiveCmd}</pre>
         </section>
       )}
 
@@ -400,16 +507,16 @@ function ExpandedEvent({
         </section>
       )}
 
-      {output && (
+      {effectiveOutput && (
         <section className="monitor-expanded-section">
           <div className="monitor-section-title">
-            <span>标准输出 / 错误流</span>
+            <span>{event.tool === "grep" ? "代码检索命中结果" : event.tool === "read" ? "文件内容预览快照" : "标准输出 / 错误流"}</span>
             <button onClick={() => void copyOutput()}>
               {outCopied ? <Check size={12} color="var(--monitor-green)" /> : <Copy size={12} />}
               {outCopied ? "已复制" : "复制"}
             </button>
           </div>
-          <pre>{output}</pre>
+          <pre style={{ maxHeight: 280, overflowY: "auto" }}>{effectiveOutput}</pre>
         </section>
       )}
     </div>
