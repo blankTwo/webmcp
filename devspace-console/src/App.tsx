@@ -229,13 +229,21 @@ function WorkspaceRow({
   selected: boolean;
   onClick: () => void;
 }) {
+  const statusLabel = () => {
+    if (workspace.status === "running") return "执行中";
+    if (workspace.status === "active") return "最近活跃";
+    if (workspace.status === "error") return "最近有异常";
+    if (workspace.eventCount > 0) return "就绪 (待命)";
+    return "等待调用";
+  };
+
   return (
     <button className={classNames("monitor-workspace", selected && "selected")} onClick={onClick}>
       <span className={classNames("monitor-workspace-dot", workspace.status)} />
       <span className="monitor-workspace-copy">
         <strong>{workspace.name}</strong>
         <small title={workspace.path}>
-          {workspace.status === "running" ? "运行中" : workspace.status === "error" ? "最近有异常" : "等待调用"}
+          {statusLabel()}
         </small>
       </span>
       <span className="monitor-workspace-count">{workspace.eventCount}</span>
@@ -1458,24 +1466,24 @@ function RootsManagerView({
 
     try {
       // 1. Try to fetch from online WebMCP backend
-      const res = await consoleApi<{
-        ok: boolean;
-        allowedRoots: AllowedRootInfo[];
-        workspaces: WorkspaceSessionInfo[];
-        configPath: string;
-        error?: string;
-      }>("GET", "/console/roots");
-      if (res.ok) {
-        setRoots(res.allowedRoots || []);
-        setWorkspaces(res.workspaces || []);
-        setConfigPath(res.configPath || "");
-        return;
+      try {
+        const res = await consoleApi<{
+          ok: boolean;
+          allowedRoots: AllowedRootInfo[];
+          workspaces: WorkspaceSessionInfo[];
+          configPath: string;
+          error?: string;
+        }>("GET", "/console/roots");
+        if (res.ok) {
+          setRoots(res.allowedRoots || []);
+          setWorkspaces(res.workspaces || []);
+          setConfigPath(res.configPath || "");
+          return;
+        }
+      } catch {
+        // Fallback to local config file if service is offline
       }
-    } catch {
-      // Fallback to local config file if service is offline
-    }
 
-    try {
       const cfg = await invoke<{
         publicBaseUrl?: string | null;
         ownerToken?: string | null;
@@ -1523,22 +1531,22 @@ function RootsManagerView({
     setActionBusy("add-root");
     setActionFeedback(null);
     try {
-      const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
-        "POST",
-        "/console/roots",
-        { path: p },
-      );
-      if (res.ok) {
-        setActionFeedback(res.message || "添加成功！");
-        setNewRootInput("");
-        await fetchRootsData();
-        return;
+      try {
+        const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
+          "POST",
+          "/console/roots",
+          { path: p },
+        );
+        if (res.ok) {
+          setActionFeedback(res.message || "添加成功！");
+          setNewRootInput("");
+          await fetchRootsData();
+          return;
+        }
+      } catch {
+        // Backend service might be offline, fallback to direct Tauri IPC
       }
-    } catch {
-      // Backend service might be offline, fallback to direct Tauri IPC
-    }
 
-    try {
       const current = roots.map((r) => normalizeDisplayPath(r.path));
       if (!current.some((r) => r.toLowerCase() === p.toLowerCase())) {
         const next = [...current, p];
@@ -1561,21 +1569,21 @@ function RootsManagerView({
     setActionBusy(`remove-${pathToRemove}`);
     setActionFeedback(null);
     try {
-      const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
-        "POST",
-        "/console/roots/remove",
-        { path: pathToRemove },
-      );
-      if (res.ok) {
-        setActionFeedback(res.message || "已成功移除白名单目录");
-        await fetchRootsData();
-        return;
+      try {
+        const res = await consoleApi<{ ok: boolean; message?: string; error?: string }>(
+          "POST",
+          "/console/roots/remove",
+          { path: pathToRemove },
+        );
+        if (res.ok) {
+          setActionFeedback(res.message || "已成功移除白名单目录");
+          await fetchRootsData();
+          return;
+        }
+      } catch {
+        // Backend service might be offline, fallback to direct Tauri IPC
       }
-    } catch {
-      // Backend service might be offline, fallback to direct Tauri IPC
-    }
 
-    try {
       const next = roots
         .map((r) => normalizeDisplayPath(r.path))
         .filter((r) => r.toLowerCase() !== pathToRemove.toLowerCase());

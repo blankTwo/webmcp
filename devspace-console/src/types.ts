@@ -1,4 +1,4 @@
-export type WorkspaceStatus = "running" | "idle" | "error";
+export type WorkspaceStatus = "running" | "active" | "idle" | "error";
 export type ActionKind =
   | "command"
   | "test"

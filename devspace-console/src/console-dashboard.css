@@ -341,6 +341,11 @@ button {
   animation: pulse-dot 2s infinite ease-in-out;
 }
 
+.monitor-workspace-dot.active {
+  background: var(--monitor-blue);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
+}
+
 .monitor-workspace-dot.error {
   background: var(--monitor-red);
   box-shadow: 0 0 0 3px var(--monitor-red-glow);

@@ -2913,9 +2913,14 @@ export function createServer(
 
     const requestedLimit = Number.parseInt(String(req.query.limit ?? "100"), 10);
     const limit = Number.isFinite(requestedLimit) ? requestedLimit : 100;
+    const now = Date.now();
     const workspaceSessions = workspaceStore.listSessions(200);
     const runningWorkspaceIds = workspaceSessions
-      .filter((session) => processSessions.list(session.id, false).length > 0)
+      .filter((session) => {
+        if (processSessions.list(session.id, false).length > 0) return true;
+        const lastUsedMs = session.lastUsedAt ? new Date(session.lastUsedAt).getTime() : 0;
+        return (now - lastUsedMs) < 60_000;
+      })
       .map((session) => session.id);
     res.setHeader("Cache-Control", "no-store");
     res.json({

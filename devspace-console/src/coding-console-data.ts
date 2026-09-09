@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { consoleApi, withQuery } from "./console-api";
-import type { ActionKind, ConsoleToolUi, DiffStats, LogEvent, LogKind, LogStatus, SymbolContext, WorkspaceItem } from "./types";
+import type { ActionKind, ConsoleToolUi, DiffStats, LogEvent, LogKind, LogStatus, SymbolContext, WorkspaceItem, WorkspaceStatus } from "./types";
 
 interface RawWorkspaceSession {
   id: string;
@@ -283,17 +283,33 @@ function mapData(
     Object.entries(eventCounts).map(([root, count]) => [normalizeRoot(root), count]),
   );
 
+  const now = Date.now();
   const workspaces: WorkspaceItem[] = Array.from(rootSessions.values())
     .map((session) => {
       const id = normalizeRoot(session.root);
       const workspaceEvents = events.filter((event) => event.workspaceId === id);
       const hasError = workspaceEvents.slice(0, 10).some((event) => event.status === "error");
+      const eventCount = normalizedCounts.get(id) ?? workspaceEvents.length;
+      const lastUsedMs = session.lastUsedAt ? new Date(session.lastUsedAt).getTime() : 0;
+      const diffMs = now - lastUsedMs;
+
+      let status: WorkspaceStatus = "idle";
+      if (runningRoots.has(id) || (lastUsedMs > 0 && diffMs < 45_000)) {
+        status = "running";
+      } else if (hasError) {
+        status = "error";
+      } else if (lastUsedMs > 0 && diffMs < 5 * 60_000) {
+        status = "active";
+      } else {
+        status = "idle";
+      }
+
       return {
         id,
         name: workspaceName(session.root),
         path: session.root,
-        status: runningRoots.has(id) ? "running" : hasError ? "error" : "idle",
-        eventCount: normalizedCounts.get(id) ?? workspaceEvents.length,
+        status,
+        eventCount,
         lastActiveAt: session.lastUsedAt,
       } satisfies WorkspaceItem;
     })
