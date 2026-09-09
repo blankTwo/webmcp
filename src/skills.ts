@@ -30,7 +30,7 @@ export function effectiveSkillPaths(config: ServerConfig, cwd: string): string[]
   const defaultPathCandidates = [
     join(homedir(), ".agents", "skills"),
     resolve(cwd, ".agents", "skills"),
-    config.gptmcpSkillsDir,
+    config.webmcpSkillsDir,
     join(config.agentDir, "skills"),
     bundledSkills,
   ];

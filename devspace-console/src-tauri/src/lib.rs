@@ -349,7 +349,8 @@ async fn get_client_status() -> Result<ClientStatus, String> {
     match response {
         Ok(response) if response.status().is_success() => {
             let payload: Value = response.json().await.unwrap_or(Value::Null);
-            if payload.get("name").and_then(Value::as_str) != Some("webmcp") {
+            let name = payload.get("name").and_then(Value::as_str);
+            if name != Some("webmcp") && name != Some("gptmcp") {
                 return Ok(ClientStatus {
                     connected: false,
                     configured,

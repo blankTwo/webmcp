@@ -860,7 +860,7 @@ export function createMcpServer(
     {
       name: "webmcp",
       title: "WebMCP",
-      version: WebMCP_VERSION,
+      version: WEBMCP_VERSION,
       description:
         "Coding tools for project workspaces. Open each project or worktree once, then reuse its workspaceId.",
     },
