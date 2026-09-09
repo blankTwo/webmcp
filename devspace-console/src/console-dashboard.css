@@ -3467,9 +3467,22 @@ button {
 }
 
 .monitor-action-badge.badge-file {
-  background: rgba(148, 163, 184, 0.15);
-  color: #cbd5e1;
-  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.monitor-detail-tag {
+  font-size: 11px;
+  color: var(--monitor-text-soft);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--monitor-panel-soft);
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--monitor-line);
 }
 
 .monitor-symbol-tag {

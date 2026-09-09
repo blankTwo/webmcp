@@ -2711,6 +2711,11 @@ function App() {
                           </div>
                           <div className="monitor-event-meta-line">
                             <span className="monitor-tool-tag">{event.tool}</span>
+                            {event.purpose && event.summary !== event.purpose && (
+                              <span className="monitor-detail-tag" title={event.summary}>
+                                {event.summary}
+                              </span>
+                            )}
                             {event.symbolContext && (
                               <span className="monitor-symbol-tag" title={event.symbolContext.namePath}>
                                 {event.symbolContext.namePath}

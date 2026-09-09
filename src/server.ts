@@ -197,6 +197,21 @@ function optionalWorkspaceIdSchema() {
   return z.string().optional().describe(workspaceIdDescription);
 }
 
+function optionalPurposeSchema() {
+  return z
+    .string()
+    .max(300)
+    .optional()
+    .describe("Concise Chinese description explaining your intent or purpose to the user (e.g. '检查喜马拉雅发布标签描述及规范化逻辑').");
+}
+
+function isTestCommand(command: string): boolean {
+  const lower = command.toLowerCase();
+  return /\b(test|jest|vitest|pytest|mocha|playwright|cypress)\b/.test(lower)
+    || /\bnpm\s+(run\s+)?test\b/.test(lower)
+    || /\bpnpm\s+(run\s+)?test\b/.test(lower);
+}
+
 function resolveToolWorkspace(
   workspaces: WorkspaceRegistry,
   workspaceId: string | undefined,
@@ -586,6 +601,7 @@ function registerManagedProcessTools(
         `Run a command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, long-running processes, and approved Git metadata writes. ${SHELL_GIT_WRITE_ALLOWANCE}`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         cmd: z.string().min(1).describe(`Shell command to execute. ${SHELL_GIT_WRITE_ALLOWANCE}`),
         tty: z
           .boolean()
@@ -674,6 +690,7 @@ function registerManagedProcessTools(
         "Poll or write characters to a process returned by exec_command. Omit chars or pass an empty string to poll. Pass \\u0003 to send Ctrl-C.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         sessionId: z.number().describe("Process session identifier returned by exec_command."),
         chars: z.string().optional().describe("Characters to write. Omit or pass an empty string to poll."),
         columns: z.number().int().min(1).max(1_000).optional().describe("Resize a PTY to this width."),
@@ -749,6 +766,7 @@ function registerManagedProcessTools(
         "List managed process sessions for a workspace. Includes recently completed sessions by default so the agent can inspect what just finished.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         includeCompleted: z
           .boolean()
           .optional()
@@ -788,6 +806,7 @@ function registerManagedProcessTools(
         "Get metadata for one managed process session without consuming its buffered output.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         sessionId: z.number().int().positive().describe("Managed process session identifier."),
       },
       outputSchema: resultOutputSchema({
@@ -824,6 +843,7 @@ function registerManagedProcessTools(
         "Terminate a managed process session. WebMCP first requests graceful termination, waits briefly, then force-kills the process tree if it is still running.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         sessionId: z.number().int().positive().describe("Process session identifier returned by exec_command."),
         gracePeriodMs: z
           .number()
@@ -1119,6 +1139,7 @@ export function createMcpServer(
           "List skills available to the workspace. Call this only when the current task may match a skill; use skill_read to load one matching skill.",
         inputSchema: {
           workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         },
         outputSchema: resultOutputSchema({
           count: z.number().int().nonnegative(),
@@ -1166,6 +1187,7 @@ export function createMcpServer(
           "Read the full SKILL.md body for one skill returned by skills_list. Do not load unrelated skills.",
         inputSchema: {
           workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
           name: z.string().min(1).describe("Skill name returned by skills_list."),
         },
         outputSchema: resultOutputSchema({
@@ -1237,6 +1259,7 @@ export function createMcpServer(
         "Create or replace the lightweight todo list for the current workspace. Use this to persist the model's current execution checklist. This is separate from checkpoints and is not a Goal system.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         todos: z.array(workspaceTodoInputSchema).max(100).describe("Complete todo list in execution order."),
         reportMode: workspaceTodoReportModeSchema.optional().describe("Use summary when the user requested a final report after all items are complete."),
       },
@@ -1295,6 +1318,7 @@ export function createMcpServer(
         "Update one item in the workspace todo list by id. Use this as work starts or completes so the checklist remains current. When reportMode is summary, do not report completion until all items are completed.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         id: z.string().min(1).describe("Todo id returned by todo_write."),
         status: workspaceTodoStatusSchema.describe("New todo status."),
         content: z.string().min(1).optional().describe("Optional replacement todo text."),
@@ -1362,6 +1386,7 @@ export function createMcpServer(
         "Optional end-of-round tool to mark completion of the current user request. Provide a concise 1-paragraph summary of what was completed, verified, or changed. Do not use bullets or line breaks.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         title: z.string().max(80).optional().describe("Optional short title for this round summary."),
         summary: z.string().min(1).max(600).describe("One concise user-facing paragraph summarizing the result."),
       },
@@ -1409,6 +1434,7 @@ server.registerTool(
         "Save a compact continuation checkpoint for this workspace after a meaningful milestone, before switching tasks, or when the user pauses work. Store project state and decisions, not the full conversation or secrets. A checkpoint updates the workspace resume state used by future ChatGPT conversations.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         goal: z.string().min(1).describe("Overall project goal that should survive into the next conversation."),
         currentTask: z.string().min(1).describe("The task or phase currently in progress."),
         completed: z.array(z.string()).optional().describe("Important work already completed."),
@@ -1431,7 +1457,7 @@ server.registerTool(
         openWorldHint: false,
       },
     },
-    async ({ workspaceId, ...input }, { _meta }) => {
+    async ({ workspaceId, purpose, ...input }, { _meta }) => {
       const startedAt = performance.now();
       const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const { state, facts, checkpoint } = await saveWorkspaceCheckpoint(
@@ -1463,6 +1489,7 @@ server.registerTool(
         "Search compact historical checkpoints for the current workspace when the resume state lacks a needed prior decision or the user asks what happened in earlier work. This searches saved project state, not full ChatGPT transcripts.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         query: z.string().default("").describe("Keyword or phrase to find in saved goals, tasks, decisions, files, blockers, or next steps. Leave empty to list recent checkpoints."),
         limit: z.number().int().min(1).max(10).optional().describe("Maximum checkpoint summaries to return. Defaults to 5."),
       },
@@ -1540,6 +1567,7 @@ server.registerTool(
         "Read an image file from the workspace as multimodal image content (PNG, JPEG, WebP, GIF, SVG, BMP, ICO). Use this when inspecting UI screenshots, diagrams, assets, or visual output.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         path: z.string().min(1).describe("Image file path relative to the workspace root."),
       },
       outputSchema: resultOutputSchema({
@@ -1612,6 +1640,7 @@ server.registerTool(
         "Read one file with path, or several files with paths (max 20). Prefer one multi-file call when several known files are needed. For nested AGENTS.md or CLAUDE.md instructions, read the listed instruction file before working in its scope. Use skill_read rather than read for skill discovery.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         path: z.string().min(1).optional().describe("One file path relative to the workspace root."),
         paths: z
           .array(z.string().min(1))
@@ -1645,7 +1674,7 @@ server.registerTool(
       }),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, path, paths, offset, limit }, { _meta }) => {
+    async ({ workspaceId, purpose, path, paths, offset, limit }, { _meta }) => {
       const startedAt = performance.now();
       const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       const targets = [
@@ -1749,6 +1778,7 @@ server.registerTool(
         "Move or rename one file or directory inside a workspace. The destination parent must already exist and the destination must not already exist.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         source: z.string().min(1).describe("Existing source path relative to the workspace root."),
         destination: z.string().min(1).describe("Unused destination path relative to the workspace root."),
       },
@@ -1802,6 +1832,7 @@ server.registerTool(
         `Create or completely overwrite a file in a workspace. Prefer ${toolNames.edit} for targeted changes to existing files.`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         path: z
           .string()
           .describe("File path to write, relative to the workspace root."),
@@ -1870,6 +1901,7 @@ server.registerTool(
         `Edit one file in a workspace by replacing text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file (supports \".*?\" non-greedy regex wildcards for robust pattern matching). Automatically normalizes CRLF/LF line endings and performs syntax validation on modification.`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         path: z
           .string()
           .describe("File path to edit, relative to the workspace root."),
@@ -1983,6 +2015,7 @@ server.registerTool(
         "Extract high-level code symbols (functions, classes, methods, constructors, interfaces, types) from a file. Provides exact line numbers and signatures using AST parsing with minimal tokens. Ideal for understanding a file before editing.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         path: z.string().min(1).describe("File path relative to the workspace root."),
         depth: z.number().int().positive().max(10).optional().describe("Maximum nesting depth of symbols. Defaults to 3."),
       },
@@ -2043,6 +2076,7 @@ server.registerTool(
         "Find a specific symbol (function, class, method) by name or path pattern. Can return the complete implementation body directly (includeBody: true), eliminating the need to read the entire file.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         name: z.string().min(1).describe("Symbol name or path (e.g. 'calculateSignature' or 'PaymentService/process')."),
         path: z.string().optional().describe("Optional file path relative to workspace root. If omitted, searches across code files in workspace."),
         includeBody: z.boolean().optional().describe("If true, returns the complete implementation body of matching symbols. Defaults to false."),
@@ -2151,6 +2185,7 @@ server.registerTool(
         "Replace the body of a function, method, or class using AST symbol resolution. Does NOT require providing oldText. Eliminates exact-match failures and newline mismatches. Automatically verifies syntax diagnostics after edit.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         path: z.string().min(1).describe("File path relative to the workspace root."),
         symbolName: z.string().min(1).describe("Target symbol name or path (e.g. 'calculateSignature' or 'PaymentService/createOrder')."),
         newBody: z.string().describe("New body content for the symbol. Can be enclosed in { ... } or provided as bare statements."),
@@ -2232,6 +2267,7 @@ server.registerTool(
         "Insert a new function, method, class, or symbol relative to an existing symbol ('before' or 'after'). Automatically adjusts spacing and runs edit-time syntax diagnostics.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         path: z.string().min(1).describe("File path relative to the workspace root."),
         targetSymbol: z.string().min(1).describe("Existing reference symbol name or path."),
         position: z.enum(["before", "after"]).describe("Insert position relative to target symbol."),
@@ -2306,6 +2342,7 @@ server.registerTool(
         "Return a compact outline of source files and top-level symbols. Use this before broad grep/read sequences when you need a map of an unfamiliar area.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         path: z.string().optional().describe("Directory relative to the workspace root. Defaults to the workspace root."),
         maxFiles: z.number().int().positive().max(300).optional().describe("Maximum source files to outline. Defaults to 80."),
       },
@@ -2403,6 +2440,7 @@ server.registerTool(
           "Apply one Codex-style patch in a workspace. Supports adding, overwriting, updating, deleting, and moving files. Use this for all file modifications. Paths must be relative to the workspace.",
         inputSchema: {
           workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
           patch: z
             .string()
             .describe("One Codex-style multi-file patch enclosed by *** Begin Patch and *** End Patch markers."),
@@ -2420,7 +2458,7 @@ server.registerTool(
         }),
         annotations: EDIT_TOOL_ANNOTATIONS,
       },
-      async ({ workspaceId, patch }, { _meta }) => {
+      async ({ workspaceId, purpose, patch }, { _meta }) => {
         const startedAt = performance.now();
         const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
         const applied = await applyPatch(workspace.root, patch);
@@ -2470,6 +2508,7 @@ server.registerTool(
           "Search file contents in a workspace. Use this before broad reads when looking for symbols, text, or usage sites. Respects project ignore rules.",
         inputSchema: {
           workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
           pattern: z.string().describe("Search pattern."),
           path: z
             .string()
@@ -2482,7 +2521,7 @@ server.registerTool(
         outputSchema: resultOutputSchema(),
         annotations: { readOnlyHint: true },
       },
-      async ({ workspaceId, ...input }, { _meta }) => {
+      async ({ workspaceId, purpose, ...input }, { _meta }) => {
         const startedAt = performance.now();
         const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
         if (input.path) workspaces.resolvePath(workspace, input.path);
@@ -2539,6 +2578,7 @@ server.registerTool(
           "Find files by glob pattern in a workspace. Use this to discover filenames or narrow file sets before reading. Respects project ignore rules.",
         inputSchema: {
           workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
           pattern: z.string().describe("File glob pattern."),
           path: z
             .string()
@@ -2605,6 +2645,7 @@ server.registerTool(
           "List a directory in a workspace. Use this for directory inspection before reading files.",
         inputSchema: {
           workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
           path: z
             .string()
             .describe(
@@ -2670,6 +2711,7 @@ server.registerTool(
         : `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by WebMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
         command: z
           .string()
           .describe(

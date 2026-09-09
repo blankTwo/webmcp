@@ -107,45 +107,92 @@ function statusForEvent(event: RawConsoleEvent): LogStatus {
   return "success";
 }
 
-function summaryForEvent(event: RawConsoleEvent) {
-  if (event.error) return event.error;
+export function inferActionKind(event: RawConsoleEvent): ActionKind {
+  if (event.actionKind) return event.actionKind;
+  const tool = (event.tool || "").toLowerCase();
+  const cmd = (event.commandPreview || "").toLowerCase();
+  if (tool.includes("symbol")) return "symbol";
+  if (tool === "checkpoint" || tool === "save_checkpoint") return "checkpoint";
+  if (tool.includes("todo")) return "todo";
+  if (cmd.includes("test") || cmd.includes("jest") || cmd.includes("vitest") || cmd.includes("pytest")) return "test";
+  if (tool === "read" || tool === "list_dir" || tool === "ls" || tool === "move_file") return "file";
+  if (tool === "grep" || tool === "glob" || tool === "search" || tool === "code_explore") return "search";
+  if (tool === "edit" || tool === "write" || tool === "apply_patch") return "edit";
+  if (tool === "write_stdin" || tool === "run_terminal_command") return "process";
+  return "command";
+}
+
+function summaryForEvent(event: RawConsoleEvent): string {
+  if (event.error) return `执行异常: ${event.error}`;
   if (event.purpose && event.purpose.trim()) return event.purpose.trim();
-  switch (event.tool) {
-    case "open_workspace":
-      return `打开工作区 ${event.path ?? ""}`.trim();
-    case "exec_command":
-    case "bash":
-      return event.commandPreview ? `执行 ${event.commandPreview}` : "执行命令";
-    case "write_stdin":
-      return event.running ? "等待运行中进程输出" : "进程输出已更新";
-    case "read":
-      return `读取 ${event.path ?? "文件"}`;
-    case "edit":
-      return `编辑 ${event.path ?? "文件"}`;
-    case "write":
-      return `写入 ${event.path ?? "文件"}`;
-    case "apply_patch":
-      return "应用代码补丁";
-    case "grep":
-      return `搜索内容 ${event.path ?? ""}`.trim();
-    case "glob":
-      return `查找文件 ${event.path ?? ""}`.trim();
-    case "ls":
-      return `查看目录 ${event.path ?? ""}`.trim();
-    case "checkpoint": {
-      const summary = event.consoleUi?.card.summary;
-      const currentTask = summary && typeof summary === "object" && !Array.isArray(summary) && "currentTask" in summary
-        ? summary.currentTask
-        : undefined;
-      return typeof currentTask === "string" && currentTask
-        ? `已保存工作区上下文 · ${currentTask}`
-        : "已保存工作区上下文";
-    }
-    case "history_search":
-      return "搜索工作区历史上下文";
-    default:
-      return event.tool.replaceAll("_", " ");
+
+  const tool = event.tool;
+  const path = event.path ?? "";
+  const basename = path.split(/[\\/]/).pop() || path;
+  const cmd = event.commandPreview ?? "";
+
+  if (tool === "read") {
+    if (path.includes("test") || path.includes("spec")) return `查阅测试用例源码 (${basename})`;
+    if (path.includes("model") || path.includes("dto") || path.includes("entity") || path.includes("form")) return `分析业务数据模型定义 (${basename})`;
+    if (path.includes("service") || path.includes("controller") || path.includes("handler") || path.includes("api")) return `探查核心业务逻辑实现 (${basename})`;
+    if (path.includes("config") || path.includes(".json") || path.includes(".yml") || path.includes(".env")) return `检查项目配置参数 (${basename})`;
+    return basename ? `阅读并解析源文件 (${basename})` : "阅读项目文件内容";
   }
+  if (tool === "grep") {
+    const cardSummary = (event.consoleUi?.card?.summary || {}) as Record<string, unknown>;
+    const pattern = (cardSummary.pattern as string) || "";
+    if (pattern) return `在代码库中检索关键字 “${pattern}”`;
+    return basename ? `检索代码调用与关键字引用 (${basename})` : "检索代码库关键字与调用点";
+  }
+  if (tool === "glob") {
+    return `按通配规则查找项目文件 (${path || "全工作区"})`;
+  }
+  if (tool === "apply_patch" || tool === "edit") {
+    return `应用代码重构与变更 (${basename || "工作区"})`;
+  }
+  if (tool === "write") {
+    return `新建/覆盖写入源文件 (${basename})`;
+  }
+  if (tool === "replace_symbol_body") {
+    const sym = event.symbolContext?.name || "";
+    return sym ? `重构核心实现体 [${sym}]` : `AST 语法树精准替换函数实现 (${basename})`;
+  }
+  if (tool === "insert_symbol") {
+    const sym = event.symbolContext?.name || "";
+    return sym ? `在 [${sym}] 旁注入新声明` : `向源文件注入新符号定义 (${basename})`;
+  }
+  if (tool === "find_symbol") {
+    const sym = event.symbolContext?.name || "";
+    return sym ? `定位代码符号定义 [${sym}]` : `AST 检索符号声明与导出 (${basename})`;
+  }
+  if (tool === "code_explore") {
+    return "巡检代码骨架与顶层模块结构";
+  }
+  if (tool === "checkpoint") {
+    const summary = event.consoleUi?.card.summary;
+    const currentTask = summary && typeof summary === "object" && !Array.isArray(summary) && "currentTask" in summary
+      ? summary.currentTask
+      : undefined;
+    return typeof currentTask === "string" && currentTask
+      ? `记录开发里程碑: ${currentTask}`
+      : "记录阶段开发里程碑与意图检查点";
+  }
+  if (tool.includes("todo")) {
+    return "同步与更新任务执行追踪清单";
+  }
+  if (tool === "exec_command" || tool === "bash" || tool === "shell" || tool === "run_terminal_command") {
+    if (cmd.includes("git status")) return "检查 Git 工作树改动状态";
+    if (cmd.includes("git diff")) return "审查未提交的代码变更 Diff";
+    if (cmd.includes("git log")) return "查询版本提交历史记录";
+    if (cmd.includes("test")) return `执行自动化测试套件 ($ ${cmd})`;
+    if (cmd.includes("build") || cmd.includes("tsc")) return `编译与构建工程 ($ ${cmd})`;
+    if (cmd.includes("install") || cmd.includes("add")) return `安装管理依赖包 ($ ${cmd})`;
+    return cmd ? `运行终端指令: ${cmd}` : "执行控制台指令";
+  }
+  if (tool === "open_workspace") {
+    return `打开并接入工作区 ${basename}`.trim();
+  }
+  return event.tool.replaceAll("_", " ");
 }
 
 function durationLabel(durationMs: number) {
@@ -246,7 +293,7 @@ function mapData(
         time: eventTime(event.timestamp),
         tool: event.tool,
         kind: kindForTool(event.tool),
-        actionKind: event.actionKind,
+        actionKind: inferActionKind(event),
         purpose: event.purpose,
         diffStats: event.diffStats,
         symbolContext: event.symbolContext,
