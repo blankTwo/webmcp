@@ -243,6 +243,31 @@ function WorkspaceRow({
   );
 }
 
+function actionKindBadge(event: LogEvent) {
+  const kind = event.actionKind;
+  switch (kind) {
+    case "symbol":
+      return { label: "符号重构", className: "badge-symbol", emoji: "🛠️" };
+    case "test":
+      return { label: "单元测试", className: "badge-test", emoji: "🧪" };
+    case "edit":
+      return { label: "代码改动", className: "badge-edit", emoji: "📝" };
+    case "checkpoint":
+      return { label: "阶段里程碑", className: "badge-checkpoint", emoji: "📌" };
+    case "todo":
+      return { label: "任务追踪", className: "badge-todo", emoji: "📋" };
+    case "process":
+      return { label: "后台进程", className: "badge-process", emoji: "⚙️" };
+    case "search":
+      return { label: "代码检索", className: "badge-search", emoji: "🔍" };
+    case "file":
+      return { label: "文件操作", className: "badge-file", emoji: "📁" };
+    case "command":
+    default:
+      return { label: "终端执行", className: "badge-command", emoji: "⚡" };
+  }
+}
+
 function ExpandedEvent({
   event,
 }: {
@@ -276,10 +301,52 @@ function ExpandedEvent({
       <header>
         <span className={classNames("monitor-expanded-icon", event.status)}>{statusIcon(event.status)}</span>
         <div>
-          <strong>{event.summary}</strong>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className={classNames("monitor-action-badge", actionKindBadge(event).className)}>
+              <span>{actionKindBadge(event).emoji}</span>
+              <span>{actionKindBadge(event).label}</span>
+            </span>
+            <strong>{event.purpose || event.summary}</strong>
+          </div>
           <small>{event.tool} · {event.time} · {event.duration}</small>
         </div>
       </header>
+
+      {(event.diffStats || event.symbolContext || event.diagnosticsState) && (
+        <div className="monitor-expanded-summary">
+          {event.symbolContext && (
+            <div>
+              <span>AST 目标符号</span>
+              <strong className="mono ellipsis" title={event.symbolContext.namePath}>
+                {event.symbolContext.namePath}
+              </strong>
+            </div>
+          )}
+          {event.symbolContext?.lineRange && (
+            <div>
+              <span>代码行范围</span>
+              <strong className="mono">{event.symbolContext.lineRange}</strong>
+            </div>
+          )}
+          {event.diffStats && (
+            <div>
+              <span>代码变更统计</span>
+              <strong className="mono">
+                <span style={{ color: "var(--monitor-green)", marginRight: 6 }}>+{event.diffStats.additions}</span>
+                <span style={{ color: "var(--monitor-red)" }}>-{event.diffStats.removals}</span>
+              </strong>
+            </div>
+          )}
+          {event.diagnosticsState && (
+            <div>
+              <span>语法自愈检测</span>
+              <strong style={{ color: event.diagnosticsState === "valid" ? "var(--monitor-green)" : "var(--monitor-amber)" }}>
+                {event.diagnosticsState === "valid" ? "✅ 语法合规" : "⚠️ 存在警告/自愈中"}
+              </strong>
+            </div>
+          )}
+        </div>
+      )}
 
       {event.command && (
         <section className="monitor-expanded-section">
@@ -2625,8 +2692,41 @@ function App() {
                         <time>{event.time}</time>
                         <span className={classNames("monitor-tool-icon", event.kind)}><Icon size={15} /></span>
                         <span className="monitor-event-primary">
-                          <strong>{event.tool}</strong>
-                          <small>{event.summary}</small>
+                          <div className="monitor-event-title-line">
+                            <span className={classNames("monitor-action-badge", actionKindBadge(event).className)}>
+                              <span>{actionKindBadge(event).emoji}</span>
+                              <span>{actionKindBadge(event).label}</span>
+                            </span>
+                            <span className="monitor-event-purpose" title={event.purpose || event.summary}>
+                              {event.purpose || event.summary}
+                            </span>
+                          </div>
+                          <div className="monitor-event-meta-line">
+                            <span className="monitor-tool-tag">{event.tool}</span>
+                            {event.symbolContext && (
+                              <span className="monitor-symbol-tag" title={event.symbolContext.namePath}>
+                                {event.symbolContext.namePath}
+                                {event.symbolContext.lineRange ? ` [${event.symbolContext.lineRange}]` : ""}
+                              </span>
+                            )}
+                            {event.diffStats && (
+                              <span className="monitor-diff-pill">
+                                <span className="diff-add">+{event.diffStats.additions}</span>
+                                <span className="diff-rem">-{event.diffStats.removals}</span>
+                              </span>
+                            )}
+                            {event.diagnosticsState === "valid" && (
+                              <span className="monitor-diag-pill valid" title="AST 语法合规">✅ 合规</span>
+                            )}
+                            {event.diagnosticsState === "warning" && (
+                              <span className="monitor-diag-pill warning" title="语法警告/自愈中">⚠️ 诊断警告</span>
+                            )}
+                            {event.command && (
+                              <span className="monitor-cmd-preview" title={event.command}>
+                                $ {event.command}
+                              </span>
+                            )}
+                          </div>
                         </span>
                         <code title={event.target}>{event.target ?? "—"}</code>
                         <span className={classNames("monitor-duration", event.status)}>{event.duration}</span>

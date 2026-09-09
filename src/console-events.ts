@@ -10,6 +10,28 @@ const RETENTION_SETTING_KEY = "retention_days";
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1_000;
 const MAX_CONSOLE_UI_JSON_BYTES = 256 * 1024;
 
+export type ActionKind =
+  | "command"
+  | "test"
+  | "edit"
+  | "symbol"
+  | "file"
+  | "search"
+  | "checkpoint"
+  | "todo"
+  | "process";
+
+export interface SymbolContext {
+  name: string;
+  namePath: string;
+  kind?: string;
+  lineRange?: string;
+}
+
+export interface DiffStats {
+  additions: number;
+  removals: number;
+}
 export interface ConsoleToolUi {
   resource: string;
   card: Record<string, unknown>;
@@ -20,6 +42,11 @@ export interface ConsoleToolEvent {
   timestamp: string;
   type: "tool_call";
   tool: string;
+  purpose?: string;
+  actionKind?: ActionKind;
+  diffStats?: DiffStats;
+  symbolContext?: SymbolContext;
+  diagnosticsState?: "valid" | "warning";
   workspaceId?: string;
   path?: string;
   workingDirectory?: string;
@@ -38,6 +65,11 @@ export interface ConsoleToolEvent {
 
 export interface PublishConsoleToolEvent {
   tool: string;
+  purpose?: string;
+  actionKind?: ActionKind;
+  diffStats?: DiffStats;
+  symbolContext?: SymbolContext;
+  diagnosticsState?: "valid" | "warning";
   workspaceId?: string;
   path?: string;
   workingDirectory?: string;
@@ -73,6 +105,11 @@ type ConsoleEventRow = {
   id: string;
   timestamp: string;
   tool: string;
+  purpose: string | null;
+  action_kind: string | null;
+  diff_stats_json: string | null;
+  symbol_context_json: string | null;
+  diagnostics_state: string | null;
   workspace_id: string | null;
   path: string | null;
   working_directory: string | null;
@@ -155,6 +192,21 @@ export class ConsoleEventStore {
     try {
       this.database.sqlite.exec("alter table console_tool_events add column console_ui_json text;");
     } catch { /* Column already exists */ }
+    try {
+      this.database.sqlite.exec("alter table console_tool_events add column purpose text;");
+    } catch { /* Column already exists */ }
+    try {
+      this.database.sqlite.exec("alter table console_tool_events add column action_kind text;");
+    } catch { /* Column already exists */ }
+    try {
+      this.database.sqlite.exec("alter table console_tool_events add column diff_stats_json text;");
+    } catch { /* Column already exists */ }
+    try {
+      this.database.sqlite.exec("alter table console_tool_events add column symbol_context_json text;");
+    } catch { /* Column already exists */ }
+    try {
+      this.database.sqlite.exec("alter table console_tool_events add column diagnostics_state text;");
+    } catch { /* Column already exists */ }
   }
 
   publish(input: PublishConsoleToolEvent): ConsoleToolEvent {
@@ -169,14 +221,20 @@ export class ConsoleEventStore {
     if (this.database) {
       this.database.sqlite.prepare(`
         insert into console_tool_events (
-          id, timestamp, tool, workspace_id, path, working_directory,
+          id, timestamp, tool, purpose, action_kind, diff_stats_json,
+          symbol_context_json, diagnostics_state, workspace_id, path, working_directory,
           command_preview, command_length, success, duration_ms, error,
           session_id, running, exit_code, output_preview, console_ui_json
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         event.id,
         event.timestamp,
         event.tool,
+        event.purpose ?? null,
+        event.actionKind ?? null,
+        event.diffStats ? JSON.stringify(event.diffStats) : null,
+        event.symbolContext ? JSON.stringify(event.symbolContext) : null,
+        event.diagnosticsState ?? null,
         event.workspaceId ?? null,
         event.path ?? null,
         event.workingDirectory ?? null,
@@ -241,7 +299,7 @@ export class ConsoleEventStore {
 
     const whereSql = where.length > 0 ? `where ${where.join(" and ")}` : "";
     const rows = this.database.sqlite.prepare(`
-      select e.id, e.timestamp, e.tool, e.workspace_id, e.path, e.working_directory,
+      select e.id, e.timestamp, e.tool, e.purpose, e.action_kind, e.diff_stats_json, e.symbol_context_json, e.diagnostics_state, e.workspace_id, e.path, e.working_directory,
              e.command_preview, e.command_length, e.success, e.duration_ms, e.error,
              e.session_id, e.running, e.exit_code, e.output_preview, e.console_ui_json, e.favorite
       from console_tool_events e
@@ -504,6 +562,11 @@ function rowToConsoleEvent(row: ConsoleEventRow): ConsoleToolEvent {
     timestamp: row.timestamp,
     type: "tool_call",
     tool: row.tool,
+    purpose: row.purpose ?? undefined,
+    actionKind: (row.action_kind as ActionKind) ?? undefined,
+    diffStats: row.diff_stats_json ? JSON.parse(row.diff_stats_json) : undefined,
+    symbolContext: row.symbol_context_json ? JSON.parse(row.symbol_context_json) : undefined,
+    diagnosticsState: (row.diagnostics_state as "valid" | "warning") ?? undefined,
     workspaceId: row.workspace_id ?? undefined,
     path: row.path ?? undefined,
     workingDirectory: row.working_directory ?? undefined,

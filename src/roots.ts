@@ -9,12 +9,13 @@ export class AccessDeniedError extends Error {
 }
 
 export function expandHomePath(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/") || path.startsWith("~\\")) {
-    return resolve(homedir(), path.slice(2));
+  const normalized = path.replace(/\\/g, "/");
+  if (normalized === "~") return homedir();
+  if (normalized.startsWith("~/")) {
+    return resolve(homedir(), normalized.slice(2));
   }
 
-  return path;
+  return normalized;
 }
 
 export function isPathInsideRoot(path: string, root: string): boolean {
@@ -41,6 +42,7 @@ export function assertAllowedPath(path: string, allowedRoots: string[]): string 
 }
 
 export function resolveAllowedPath(inputPath: string, cwd: string, allowedRoots: string[]): string {
-  const absolutePath = resolve(cwd, inputPath);
+  const sanitizedPath = inputPath ? inputPath.replace(/\\/g, "/") : inputPath;
+  const absolutePath = resolve(cwd, sanitizedPath);
   return assertAllowedPath(absolutePath, allowedRoots);
 }

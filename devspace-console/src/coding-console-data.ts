@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { consoleApi, withQuery } from "./console-api";
-import type { ConsoleToolUi, LogEvent, LogKind, LogStatus, WorkspaceItem } from "./types";
+import type { ActionKind, ConsoleToolUi, DiffStats, LogEvent, LogKind, LogStatus, SymbolContext, WorkspaceItem } from "./types";
 
 interface RawWorkspaceSession {
   id: string;
@@ -16,6 +16,11 @@ interface RawConsoleEvent {
   timestamp: string;
   type: "tool_call";
   tool: string;
+  purpose?: string;
+  actionKind?: ActionKind;
+  diffStats?: DiffStats;
+  symbolContext?: SymbolContext;
+  diagnosticsState?: "valid" | "warning";
   workspaceId?: string;
   path?: string;
   workingDirectory?: string;
@@ -104,6 +109,7 @@ function statusForEvent(event: RawConsoleEvent): LogStatus {
 
 function summaryForEvent(event: RawConsoleEvent) {
   if (event.error) return event.error;
+  if (event.purpose && event.purpose.trim()) return event.purpose.trim();
   switch (event.tool) {
     case "open_workspace":
       return `打开工作区 ${event.path ?? ""}`.trim();
@@ -240,6 +246,11 @@ function mapData(
         time: eventTime(event.timestamp),
         tool: event.tool,
         kind: kindForTool(event.tool),
+        actionKind: event.actionKind,
+        purpose: event.purpose,
+        diffStats: event.diffStats,
+        symbolContext: event.symbolContext,
+        diagnosticsState: event.diagnosticsState,
         status: statusForEvent(event),
         summary: summaryForEvent(event),
         target,

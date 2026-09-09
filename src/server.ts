@@ -1,6 +1,6 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile as readTextFile, realpath } from "node:fs/promises";
+import { readFile as readTextFile, writeFile as writeTextFile, realpath } from "node:fs/promises";
 import { extname, join as joinPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -67,6 +67,17 @@ import {
   MIN_CONSOLE_RETENTION_DAYS,
   type ConsoleToolUi,
 } from "./console-events.js";
+
+import * as Diff from "diff";
+import {
+  getSymbolsOverview,
+  formatSymbolsOverview,
+  findSymbol,
+  replaceSymbolBody,
+  insertSymbol,
+  checkSyntaxDiagnostics,
+  applySmartEdit,
+} from "./symbols/index.js";
 
 const LEGACY_CHECKPOINT_PREFIX = "checkpoint";
 const workspaceTodoStatusSchema = z.enum(["pending", "in_progress", "completed"]);
@@ -173,6 +184,10 @@ const toolNames = {
   codeExplore: "code_explore",
   skillsList: "skills_list",
   skillRead: "skill_read",
+  getSymbolsOverview: "get_symbols_overview",
+  findSymbol: "find_symbol",
+  replaceSymbolBody: "replace_symbol_body",
+  insertSymbol: "insert_symbol",
 } as const;
 
 const workspaceIdDescription =
@@ -225,7 +240,7 @@ function serverInstructions(config: ServerConfig): string {
     " Use checkpoint only at meaningful milestones, before switching tasks, or when the user pauses work; do not checkpoint after every tool call. Use history_search only when a previous checkpoint is needed to recover an older decision or detail that is not in the current continuation. Compatibility: if the user says exactly `checkpoint` but this conversation does not expose the checkpoint tool, use the existing bash tool with command `checkpoint` and immediately follow the returned machine instruction without asking the user for more input.";
 
   if (config.toolMode === "codex") {
-    return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
+    return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. When invoking WebMCP tools, you may provide a brief Chinese description in \`purpose\` explaining what you are doing (e.g. '重构 getXmSign 函数体', '运行单元测试'). Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -236,7 +251,7 @@ function serverInstructions(config: ServerConfig): string {
     ? `When a task may match a skill, use ${toolNames.skillsList} to discover available skills and ${toolNames.skillRead} to load only the matching skill before proceeding. Do not enumerate or preload skills when they are irrelevant. `
     : "";
 
-  const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
+  const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Always provide a concise Chinese description in the \`purpose\` argument of each tool call explaining the user-facing goal (e.g. '重构 getXmSign 函数实现', '运行测试套件'). Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
 
   const managedProcessInstruction = config.toolMode === "full"
     ? " Use exec_command for long-running or interactive commands, write_stdin to poll or interact with them, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session."
@@ -1002,7 +1017,7 @@ export function createMcpServer(
       const loadedAgentsFiles = includeBootstrapContext ? cardAgentsFiles : [];
       const availableAgentsFileOutputs = includeBootstrapContext ? cardAvailableAgentsFiles : [];
       const cardInstruction = config.skillsEnabled
-        ? "This conversation is now bound to this workspace; subsequent tools should normally omit workspaceId. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. Use skills_list only when skill discovery is relevant, then skill_read for the matching skill."
+        ? "This conversation is now bound to this workspace; subsequent tools should normally omit workspaceId. When calling tools, specify a concise Chinese summary in `purpose` (max 80 chars) explaining your intent to the user. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. Use skills_list only when skill discovery is relevant, then skill_read for the matching skill."
         : "This conversation is now bound to this workspace; subsequent tools should normally omit workspaceId. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.";
       const instruction = workspaceReused
         ? [
@@ -1852,7 +1867,7 @@ server.registerTool(
     {
       title: "Edit file",
       description:
-        `Edit one file in a workspace by replacing exact text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit and keep oldText as small as possible while still unique.`,
+        `Edit one file in a workspace by replacing text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file (supports \".*?\" non-greedy regex wildcards for robust pattern matching). Automatically normalizes CRLF/LF line endings and performs syntax validation on modification.`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         path: z
@@ -1864,7 +1879,7 @@ server.registerTool(
               oldText: z
                 .string()
                 .describe(
-                  "Exact text to replace. Must match uniquely in the original file.",
+                  "Text or regex pattern to replace. Supports '.*?' non-greedy wildcards. Must match uniquely in the original file.",
                 ),
               newText: z.string().describe("Replacement text."),
             }),
@@ -1879,30 +1894,59 @@ server.registerTool(
     async ({ workspaceId, ...input }, { _meta }) => {
       const startedAt = performance.now();
       const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
-      workspaces.resolvePath(workspace, input.path);
+      const absolutePath = workspaces.resolvePath(workspace, input.path);
       const response = await editFileTool(input, {
         cwd: workspace.root,
         root: workspace.root,
       });
 
+      let finalPatch = response.details?.patch ?? response.details?.diff;
+      let additions = 0;
+      let removals = 0;
+      let finalContent: string | undefined;
+
       if (response.isError) {
-        logFailedToolResponse(config, {
-          tool: toolNames.edit,
-          workspaceId: workspace.id,
-          path: input.path,
-        }, response.content, startedAt);
-        const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
-        return { ...response, content: [textBlock(bounded.text)] };
+        // Smart fallback: handles CRLF/LF mismatch, non-greedy .*? regex wildcard, etc.
+        const smartResult = await applySmartEdit(absolutePath, input.edits);
+        if (!smartResult.success) {
+          logFailedToolResponse(config, {
+            tool: toolNames.edit,
+            workspaceId: workspace.id,
+            path: input.path,
+          }, response.content, startedAt);
+          const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
+          return { ...response, content: [textBlock(bounded.text)] };
+        }
+
+        finalPatch = smartResult.patch;
+        additions = smartResult.additions;
+        removals = smartResult.removals;
+        finalContent = smartResult.content;
+      } else {
+        const stats = countDiffStats(finalPatch);
+        additions = stats.additions;
+        removals = stats.removals;
       }
 
-      const stats = countDiffStats(
-        response.details?.patch ?? response.details?.diff,
-      );
+      // Run edit-time syntax diagnostics
+      let diagnosticsSummary: string | undefined;
+      try {
+        const fileBytes = finalContent ?? await readTextFile(absolutePath, "utf8");
+        const diag = checkSyntaxDiagnostics(input.path, fileBytes);
+        if (!diag.valid && diag.formattedSummary) {
+          diagnosticsSummary = diag.formattedSummary;
+        }
+      } catch {
+        // Ignore diagnostics read error
+      }
+
       const summary = {
-        ...stats,
+        additions,
+        removals,
         editCount: input.edits.length,
       };
-      const editResultText = `Edited ${input.path} (+${stats.additions} -${stats.removals}).`;
+      const editResultText = `Edited ${input.path} (+${additions} -${removals}).` +
+        (diagnosticsSummary ? `\n\n⚠️ ${diagnosticsSummary}` : "");
       const editContent = [textBlock(editResultText)];
       logToolCall(config, {
         tool: toolNames.edit,
@@ -1915,8 +1959,8 @@ server.registerTool(
           path: input.path,
           summary,
           payload: {
-            diff: response.details?.diff,
-            patch: response.details?.patch,
+            diff: finalPatch,
+            patch: finalPatch,
           },
         }),
       });
@@ -1931,7 +1975,329 @@ server.registerTool(
     },
   );
   }
+  server.registerTool(
+    toolNames.getSymbolsOverview,
+    {
+      title: "Get symbols overview",
+      description:
+        "Extract high-level code symbols (functions, classes, methods, constructors, interfaces, types) from a file. Provides exact line numbers and signatures using AST parsing with minimal tokens. Ideal for understanding a file before editing.",
+      inputSchema: {
+        workspaceId: optionalWorkspaceIdSchema(),
+        path: z.string().min(1).describe("File path relative to the workspace root."),
+        depth: z.number().int().positive().max(10).optional().describe("Maximum nesting depth of symbols. Defaults to 3."),
+      },
+      outputSchema: resultOutputSchema({
+        filePath: z.string(),
+        totalSymbols: z.number(),
+        overview: z.string(),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ workspaceId, path, depth }, { _meta }) => {
+      const startedAt = performance.now();
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const absolutePath = workspaces.resolvePath(workspace, path);
+      try {
+        const fileContent = await readTextFile(absolutePath, "utf8");
+        const lineCount = fileContent.split(/\r?\n/).length;
+        const overview = getSymbolsOverview(path, fileContent, depth ?? 3);
+        const formatted = formatSymbolsOverview(overview, lineCount);
 
+        logToolCall(config, {
+          tool: toolNames.getSymbolsOverview,
+          workspaceId: workspace.id,
+          path,
+          success: true,
+          durationMs: Math.round(performance.now() - startedAt),
+          consoleUi: consoleToolUi(toolNames.getSymbolsOverview, {
+            workspaceId: workspace.id,
+            path,
+            summary: { symbols: overview.totalSymbols, lines: lineCount },
+          }),
+        });
+
+        return {
+          content: [textBlock(formatted)],
+          structuredContent: {
+            result: formatted,
+            filePath: path,
+            totalSymbols: overview.totalSymbols,
+            overview: formatted,
+          },
+        };
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          isError: true,
+          content: [textBlock(`Failed to get symbols overview for ${path}: ${message}`)],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    toolNames.findSymbol,
+    {
+      title: "Find symbol",
+      description:
+        "Find a specific symbol (function, class, method) by name or path pattern. Can return the complete implementation body directly (includeBody: true), eliminating the need to read the entire file.",
+      inputSchema: {
+        workspaceId: optionalWorkspaceIdSchema(),
+        name: z.string().min(1).describe("Symbol name or path (e.g. 'calculateSignature' or 'PaymentService/process')."),
+        path: z.string().optional().describe("Optional file path relative to workspace root. If omitted, searches across code files in workspace."),
+        includeBody: z.boolean().optional().describe("If true, returns the complete implementation body of matching symbols. Defaults to false."),
+      },
+      outputSchema: resultOutputSchema({
+        matches: z.array(
+          z.object({
+            name: z.string(),
+            namePath: z.string(),
+            kind: z.string(),
+            startLine: z.number(),
+            endLine: z.number(),
+            signature: z.string().optional(),
+            body: z.string().optional(),
+            filePath: z.string().optional(),
+          }),
+        ),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ workspaceId, name, path, includeBody }, { _meta }) => {
+      const startedAt = performance.now();
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      
+      const filePaths: string[] = [];
+      if (path?.trim()) {
+        filePaths.push(path.trim());
+      } else {
+        const discovery = await findFilesTool(
+          { pattern: "**/*", path: ".", limit: 200 },
+          { cwd: workspace.root, root: workspace.root },
+        );
+        if (!discovery.isError) {
+          const files = contentText(discovery.content)
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l.length > 0 && !l.startsWith("[") && CODE_EXPLORE_EXTENSIONS.has(extname(l).toLowerCase()));
+          filePaths.push(...files.slice(0, 100));
+        }
+      }
+
+      const allMatches: Array<{
+        name: string;
+        namePath: string;
+        kind: string;
+        startLine: number;
+        endLine: number;
+        signature?: string;
+        body?: string;
+        filePath: string;
+      }> = [];
+
+      for (const relPath of filePaths) {
+        try {
+          const absolutePath = workspaces.resolvePath(workspace, relPath);
+          const fileContent = await readTextFile(absolutePath, "utf8");
+          const overview = getSymbolsOverview(relPath, fileContent, 10);
+          const matches = findSymbol(overview, fileContent, name, includeBody ?? false);
+          for (const m of matches) {
+            allMatches.push({ ...m, filePath: relPath });
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+
+      const lines: string[] = [
+        `Found ${allMatches.length} symbol match(es) for '${name}':`,
+      ];
+      for (const m of allMatches) {
+        lines.push(`\n- [${m.kind}] ${m.filePath} -> ${m.namePath} [L${m.startLine}-L${m.endLine}]${m.signature ? `\n  ${m.signature}` : ""}`);
+        if (m.body) {
+          lines.push(`\n\`\`\`\n${m.body}\n\`\`\``);
+        }
+      }
+
+      const text = lines.join("\n");
+      logToolCall(config, {
+        tool: toolNames.findSymbol,
+        workspaceId: workspace.id,
+        path: path ?? ".",
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+        consoleUi: consoleToolUi(toolNames.findSymbol, {
+          workspaceId: workspace.id,
+          path: path ?? ".",
+          summary: { matches: allMatches.length, query: name },
+        }),
+      });
+
+      return {
+        content: [textBlock(text)],
+        structuredContent: {
+          result: text,
+          matches: allMatches,
+        },
+      };
+    },
+  );
+
+  server.registerTool(
+    toolNames.replaceSymbolBody,
+    {
+      title: "Replace symbol body",
+      description:
+        "Replace the body of a function, method, or class using AST symbol resolution. Does NOT require providing oldText. Eliminates exact-match failures and newline mismatches. Automatically verifies syntax diagnostics after edit.",
+      inputSchema: {
+        workspaceId: optionalWorkspaceIdSchema(),
+        path: z.string().min(1).describe("File path relative to the workspace root."),
+        symbolName: z.string().min(1).describe("Target symbol name or path (e.g. 'calculateSignature' or 'PaymentService/createOrder')."),
+        newBody: z.string().describe("New body content for the symbol. Can be enclosed in { ... } or provided as bare statements."),
+      },
+      outputSchema: resultOutputSchema({
+        symbolName: z.string(),
+        linesChanged: z.string(),
+        diagnostics: z.array(z.string()).optional(),
+      }),
+      annotations: EDIT_TOOL_ANNOTATIONS,
+    },
+    async ({ workspaceId, path, symbolName, newBody }, { _meta }) => {
+      const startedAt = performance.now();
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const absolutePath = workspaces.resolvePath(workspace, path);
+
+      let fileContent: string;
+      try {
+        fileContent = await readTextFile(absolutePath, "utf8");
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { isError: true, content: [textBlock(`Could not read ${path}: ${msg}`)] };
+      }
+
+      const replaceResult = replaceSymbolBody(path, fileContent, symbolName, newBody);
+      if (!replaceResult.success) {
+        return {
+          isError: true,
+          content: [textBlock(`Failed to replace symbol body: ${replaceResult.error}`)],
+        };
+      }
+
+      // Check syntax diagnostics before/after
+      const diag = checkSyntaxDiagnostics(path, replaceResult.newContent);
+
+      // Write updated content
+      await writeTextFile(absolutePath, replaceResult.newContent, "utf8");
+
+      // Generate diff patch
+      const patchStr = Diff.createPatch(path, fileContent, replaceResult.newContent, "", "");
+      const stats = countDiffStats(patchStr);
+
+      let resultMsg = `Successfully replaced body of '${replaceResult.replacedSymbol?.namePath ?? symbolName}' in ${path} (+${stats.additions} -${stats.removals}).`;
+      if (!diag.valid && diag.formattedSummary) {
+        resultMsg += `\n\n⚠️ ${diag.formattedSummary}`;
+      }
+
+      logToolCall(config, {
+        tool: toolNames.replaceSymbolBody,
+        workspaceId: workspace.id,
+        path,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+        consoleUi: consoleToolUi(toolNames.replaceSymbolBody, {
+          workspaceId: workspace.id,
+          path,
+          summary: { symbol: symbolName, ...stats },
+          payload: { patch: patchStr },
+        }),
+      });
+
+      return {
+        content: [textBlock(resultMsg)],
+        structuredContent: {
+          result: resultMsg,
+          symbolName,
+          linesChanged: `+${stats.additions} -${stats.removals}`,
+          diagnostics: diag.diagnostics.map((d) => `L${d.line}: ${d.message}`),
+        },
+      };
+    },
+  );
+
+  server.registerTool(
+    toolNames.insertSymbol,
+    {
+      title: "Insert symbol",
+      description:
+        "Insert a new function, method, class, or symbol relative to an existing symbol ('before' or 'after'). Automatically adjusts spacing and runs edit-time syntax diagnostics.",
+      inputSchema: {
+        workspaceId: optionalWorkspaceIdSchema(),
+        path: z.string().min(1).describe("File path relative to the workspace root."),
+        targetSymbol: z.string().min(1).describe("Existing reference symbol name or path."),
+        position: z.enum(["before", "after"]).describe("Insert position relative to target symbol."),
+        code: z.string().min(1).describe("New symbol code to insert."),
+      },
+      outputSchema: resultOutputSchema({
+        insertedAtLine: z.number().optional(),
+        diagnostics: z.array(z.string()).optional(),
+      }),
+      annotations: EDIT_TOOL_ANNOTATIONS,
+    },
+    async ({ workspaceId, path, targetSymbol, position, code }, { _meta }) => {
+      const startedAt = performance.now();
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const absolutePath = workspaces.resolvePath(workspace, path);
+
+      let fileContent: string;
+      try {
+        fileContent = await readTextFile(absolutePath, "utf8");
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { isError: true, content: [textBlock(`Could not read ${path}: ${msg}`)] };
+      }
+
+      const insertResult = insertSymbol(path, fileContent, targetSymbol, position, code);
+      if (!insertResult.success) {
+        return {
+          isError: true,
+          content: [textBlock(`Failed to insert symbol: ${insertResult.error}`)],
+        };
+      }
+
+      // Check syntax diagnostics
+      const diag = checkSyntaxDiagnostics(path, insertResult.newContent);
+
+      // Write updated content
+      await writeTextFile(absolutePath, insertResult.newContent, "utf8");
+
+      let resultMsg = `Inserted symbol ${position} '${targetSymbol}' at approximately line ${insertResult.insertedAtLine} in ${path}.`;
+      if (!diag.valid && diag.formattedSummary) {
+        resultMsg += `\n\n⚠️ ${diag.formattedSummary}`;
+      }
+
+      logToolCall(config, {
+        tool: toolNames.insertSymbol,
+        workspaceId: workspace.id,
+        path,
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+        consoleUi: consoleToolUi(toolNames.insertSymbol, {
+          workspaceId: workspace.id,
+          path,
+          summary: { target: targetSymbol, position, line: insertResult.insertedAtLine },
+        }),
+      });
+
+      return {
+        content: [textBlock(resultMsg)],
+        structuredContent: {
+          result: resultMsg,
+          insertedAtLine: insertResult.insertedAtLine,
+          diagnostics: diag.diagnostics.map((d) => `L${d.line}: ${d.message}`),
+        },
+      };
+    },
+  );
   server.registerTool(
     toolNames.codeExplore,
     {
@@ -2300,7 +2666,7 @@ server.registerTool(
     {
       title: "Bash",
       description: config.toolMode !== "full"
-        ? `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, search, file discovery, and directory inspection. ${SHELL_GIT_WRITE_ALLOWANCE} In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by WebMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`
+        ? `Run a shell command in a workspace. Underlying shell: Git Bash (standard Unix tools like grep, awk, find, sed work natively; do NOT use PowerShell cmdlets or Windows findstr; do NOT run long-running/background servers that do not exit). Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, search, file discovery, and directory inspection. ${SHELL_GIT_WRITE_ALLOWANCE} In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by WebMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`
         : `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by WebMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),

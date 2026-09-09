@@ -1,4 +1,15 @@
 export type WorkspaceStatus = "running" | "idle" | "error";
+export type ActionKind =
+  | "command"
+  | "test"
+  | "edit"
+  | "symbol"
+  | "file"
+  | "search"
+  | "checkpoint"
+  | "todo"
+  | "process";
+
 export type LogKind = "command" | "edit" | "file" | "process" | "search" | "system";
 export type LogStatus = "success" | "running" | "warning" | "error" | "idle";
 
@@ -16,6 +27,18 @@ export interface WorkspaceItem {
   lastActiveAt?: string;
 }
 
+export interface DiffStats {
+  additions: number;
+  removals: number;
+}
+
+export interface SymbolContext {
+  name: string;
+  namePath: string;
+  kind?: string;
+  lineRange?: string;
+}
+
 export interface LogEvent {
   id: string;
   workspaceId: string;
@@ -23,6 +46,11 @@ export interface LogEvent {
   time: string;
   tool: string;
   kind: LogKind;
+  actionKind?: ActionKind;
+  purpose?: string;
+  diffStats?: DiffStats;
+  symbolContext?: SymbolContext;
+  diagnosticsState?: "valid" | "warning";
   status: LogStatus;
   summary: string;
   target?: string;
