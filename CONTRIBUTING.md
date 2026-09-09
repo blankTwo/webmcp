@@ -1,61 +1,104 @@
-# Contributing
+﻿# Contributing to WebMCP
 
-## Read This First
+Thank you for your interest in contributing to WebMCP!
 
-I'm not actively accepting contributions right now.
+WebMCP is an open-source local development execution layer that connects ChatGPT and MCP hosts directly to your local coding environment. We welcome community contributions, bug fixes, enhancements, and ideas that align with our core design taste.
 
-You can still open an issue or PR, but please do so knowing there is a high chance I close it, defer it forever, or never look at it.
+---
 
-If that sounds annoying, that is because it is. This project is still early and me and users trying to keep it scoped, quality, and direction under control.
+## Core Principles & Product Model
 
-## What I'm Most Likely To Accept
+Before submitting code, please familiarize yourself with our guiding architecture principles:
 
-Small, focused bug fixes.
+1. **The host is the orchestrator.** WebMCP exposes clear, composable capabilities and execution states. It does not hide workflows inside opaque, uninspectable agent loops.
+2. **Everything happens in a workspace.** A workspace represents one local project directory or worktree, along with the instructions (`AGENTS.md`, `CLAUDE.md`) and state accumulated in it.
+3. **Local authority stays explicit.** WebMCP runs with local user authority. Allowed roots, paths, commands, processes, and destructive operations are strict product boundaries.
+4. **Adapters stay at the edges.** Keep core business logic independent of specific MCP clients, model providers, or UI quirks.
+5. **Prefer composable primitives.** Build a small, reliable set of operations that can be combined cleanly rather than bloating the server with single-use monolithic tools.
 
-Small reliability fixes.
+---
 
-Small performance improvements.
+## Development Setup
 
-Tightly scoped maintenance work that clearly improves the project without changing its direction.
+### Prerequisites
+- **Node.js**: `>= 22.19 < 27`
+- **npm**: `>= 10.0`
+- **Rust / Cargo**: Required if building or modifying the Tauri Desktop Console.
+- **Git**: For version control and worktree isolation.
+- **Shell**: Bash, Zsh, or PowerShell.
 
-## What I Least Likely To Accept
+### Clone and Install Dependencies
 
-Large PRs.
+```bash
+git clone https://github.com/blankTwo/webmcp.git
+cd webmcp
 
-Drive-by feature work.
+# Install root MCP server dependencies
+npm install
 
-Opinionated rewrites.
+# Install console dependencies (if working on GUI)
+cd devspace-console
+npm install
+cd ..
+```
 
-Anything that expands product scope without discussing it in community or asking for it first.
+---
 
-If you open a 1,000+ line PR full of new features, I will probably close it quickly and remember that you ignored the clearly written instructions.
+## Running in Development
 
-## If You Still Want To Open A PR
+### 1. MCP Server Backend
 
-Keep it small.
+```bash
+# Run server in watch/dev mode
+npm run dev
 
-Explain exactly what changed.
+# Typecheck TypeScript files
+npm run typecheck
 
-Explain exactly why the change should exist.
+# Build the distribution packages
+npm run build
+```
 
-Do not mix unrelated fixes together.
+### 2. Desktop Console (Tauri + React)
 
-If the PR makes anything resembling a UI change, include clear before/after images.
+```bash
+cd devspace-console
 
-If the change depends on motion, timing, transitions, or interaction details, include a short video.
+# Run Tauri desktop app with Vite hot-reloading
+npm run tauri:dev
 
-If I have to guess what changed, I are much less likely to review it.
+# Build production desktop installer/binary
+npm run tauri:build
+```
 
-## Issues First
+---
 
-If you are thinking about a non-trivial change, open an issue first.
+## Pull Request Guidelines
 
-That still does not mean I will want the PR, but it gives you a chance to avoid wasting your time.
+To keep review cycles fast and ensure top-notch quality:
 
-## Be Realistic
+1. **Keep PRs Focused**: Address a single problem, feature, or bug per PR. Avoid combining unrelated refactors or sweeping changes.
+2. **Follow Conventional Commits**: Use conventional commit prefixes such as:
+   - `feat:` for new features
+   - `fix:` for bug fixes
+   - `refactor:` for code refactoring
+   - `docs:` for documentation improvements
+   - `chore:` for build tools or dependency updates
+3. **UI / Visual Changes**: If your PR modifies the Desktop Console or Floating Ball widget, include clear before/after screenshots or short GIF/video clips.
+4. **Verify Behavior**: Ensure `npm run typecheck` and `npm run build` pass with zero errors.
+5. **Respect Security Boundaries**: Any change affecting allowed roots, path traversal, authentication, or shell execution must maintain strict isolation.
 
-Opening a PR does not create an obligation on our side.
+---
 
-I may close it. I may ignore it. I may ask you to shrink it. I may reimplement the idea ourselves later.
+## Code Style & Standards
 
-If you are fine with that, proceed.
+- **TypeScript**: Strict mode enabled. Avoid using `any` wherever possible; use explicit types or Zod schemas.
+- **Formatting**: Clean, readable code with consistent spacing and naming.
+- **Error Handling**: Preserve root errors and contextual details without leaking sensitive credentials or filesystem internals to MCP hosts.
+
+---
+
+## Community & Discussions
+
+- Open a [GitHub Issue](https://github.com/blankTwo/webmcp/issues) for bug reports, questions, or feature requests.
+- For architectural proposals or major scope additions, open an issue first to discuss the design before writing extensive code.
