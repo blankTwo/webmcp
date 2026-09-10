@@ -206,7 +206,7 @@ function optionalPurposeSchema() {
     .string()
     .max(300)
     .optional()
-    .describe("Concise Chinese description explaining your intent or purpose to the user (e.g. '检查喜马拉雅发布标签描述及规范化逻辑').");
+    .describe("Concise Chinese description explaining your intent or purpose to the user (e.g. '检查发布标签描述及规范化逻辑', recommend 10-30 characters).");
 }
 
 function isTestCommand(command: string): boolean {
@@ -1067,10 +1067,17 @@ export function createMcpServer(
         ? [
             `Workspace already open as ${workspace.id}.`,
             "Continue with the workspace already bound to this conversation.",
+            "Always provide a concise Chinese description in `purpose` explaining your goal to the user.",
+            "Use symbolic tools (find_symbol, find_referencing_symbols, get_symbols_overview, replace_symbol_body) as PRIMARY for code investigation and modification instead of grep/read.",
             "Keep following the project instructions and use lazy capability discovery when needed.",
           ].join("\n\n")
         : workspace.mode === "worktree"
-          ? "This conversation is now bound to this isolated worktree. Follow the project instructions and use lazy capability discovery when needed."
+          ? [
+              "This conversation is now bound to this isolated worktree.",
+              "Always provide a concise Chinese description in `purpose` explaining your goal to the user.",
+              "Use symbolic tools (find_symbol, find_referencing_symbols, get_symbols_overview, replace_symbol_body) as PRIMARY for code investigation and modification instead of grep/read.",
+              "Follow the project instructions and use lazy capability discovery when needed.",
+            ].join("\n\n")
           : cardInstruction;
       const resultContent: ToolContent[] = [
         {
@@ -1661,7 +1668,7 @@ server.registerTool(
     {
       title: "Read files",
       description:
-        "Read one file with path, or several files with paths (max 20). Prefer one multi-file call when several known files are needed. For nested AGENTS.md or CLAUDE.md instructions, read the listed instruction file before working in its scope. Use skill_read rather than read for skill discovery.",
+        "Read entire file contents (single file or up to 20 files). Do NOT read an entire code file just to inspect a single function or class—use find_symbol(includeBody: true) instead to conserve tokens. For nested AGENTS.md instructions, read that file before working in its scope. Use skill_read rather than read for skill discovery.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         purpose: optionalPurposeSchema(),
@@ -2653,7 +2660,7 @@ server.registerTool(
       {
         title: "Grep",
         description:
-          "Search file contents in a workspace. Use this before broad reads when looking for symbols, text, or usage sites. Respects project ignore rules.",
+          "Search plain text, configuration values, UI copy, or non-code files (json, yaml, md) in a workspace. For code definitions, use find_symbol; for call sites / references, use find_referencing_symbols. Respects project ignore rules.",
         inputSchema: {
           workspaceId: optionalWorkspaceIdSchema(),
         purpose: optionalPurposeSchema(),
