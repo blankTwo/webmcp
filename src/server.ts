@@ -270,7 +270,7 @@ function serverInstructions(config: ServerConfig): string {
 
 # Tool selection guide (read this before code inspection or editing)
 
-WebMCP provides semantic, symbol-aware tools (${toolNames.findSymbol}, ${toolNames.getSymbolsOverview}, ${toolNames.codeExplore}, ${toolNames.replaceSymbolBody}, ${toolNames.insertSymbol}). Symbolic tools are the PRIMARY tools for reading and modifying code. Traditional tools (${toolNames.grep}, ${toolNames.read}, ${toolNames.glob}, ${toolNames.edit}) are SECONDARY and must not be used on code files when a symbolic tool fits.
+WebMCP provides semantic, symbol-aware tools (${toolNames.findSymbol}, ${toolNames.findReferencingSymbols}, ${toolNames.getSymbolsOverview}, ${toolNames.codeExplore}, ${toolNames.replaceSymbolBody}, ${toolNames.insertSymbol}). Symbolic tools are the PRIMARY tools for reading and modifying code. Traditional tools (${toolNames.grep}, ${toolNames.read}, ${toolNames.glob}, ${toolNames.edit}) are SECONDARY and must not be used on code files when a symbolic tool fits.
 
 ## Tool selection mapping:
 - Inspect file outline / structure -> ${toolNames.getSymbolsOverview} or ${toolNames.codeExplore}
@@ -1061,7 +1061,7 @@ export function createMcpServer(
       const loadedAgentsFiles = includeBootstrapContext ? cardAgentsFiles : [];
       const availableAgentsFileOutputs = includeBootstrapContext ? cardAvailableAgentsFiles : [];
       const cardInstruction = config.skillsEnabled
-        ? "This conversation is now bound to this workspace; subsequent tools should normally omit workspaceId. When calling tools, specify a concise Chinese summary in `purpose` (max 80 chars) explaining your intent to the user. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. Use skills_list only when skill discovery is relevant, then skill_read for the matching skill."
+        ? "This conversation is now bound to this workspace; subsequent tools should normally omit workspaceId. When calling tools, specify a concise Chinese summary in `purpose` (max 80 chars) explaining your intent to the user. Follow loaded agentsFiles instructions. Use symbolic tools (find_symbol, find_referencing_symbols, get_symbols_overview, replace_symbol_body) as PRIMARY for code investigation and modification instead of grep/read. Before working under a path listed in availableAgentsFiles, read that instruction file. Use skills_list only when skill discovery is relevant, then skill_read for the matching skill."
         : "This conversation is now bound to this workspace; subsequent tools should normally omit workspaceId. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.";
       const instruction = workspaceReused
         ? [
