@@ -7,8 +7,8 @@ import { webmcpSkillsDir, loadWebmcpFiles, type ToolsPolicy } from "./user-confi
 
 export type ToolMode = "minimal" | "full" | "codex";
 export type WidgetMode = "off";
-const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
-const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 365 * 24 * 60 * 60;
+const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 10 * 365 * 24 * 60 * 60;
 const DEFAULT_ARTIFACT_MAX_FILE_BYTES = 100 * 1024 * 1024;
 
 export interface ServerConfig {

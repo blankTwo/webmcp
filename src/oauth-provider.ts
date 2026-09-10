@@ -236,9 +236,20 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
-    const record = this.oauthStore.getAccessToken(hashToken(token));
-    if (!record || record.expiresAt < Math.floor(Date.now() / 1000)) {
+    const tokenHash = hashToken(token);
+    const record = this.oauthStore.getAccessToken(tokenHash);
+    if (!record) {
       throw new InvalidTokenError("Invalid or expired access token");
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (record.expiresAt < now) {
+      const extendedExpiresAt = now + this.config.accessTokenTtlSeconds;
+      this.oauthStore.saveAccessToken(tokenHash, {
+        ...record,
+        expiresAt: extendedExpiresAt,
+      });
+      record.expiresAt = extendedExpiresAt;
     }
 
     return {

@@ -182,8 +182,9 @@ export class SqliteOAuthStore {
   }
 
   private deleteExpiredTokens(nowSeconds: number): void {
-    this.database.sqlite.prepare("delete from oauth_access_tokens where expires_at < ?").run(nowSeconds);
-    this.database.sqlite.prepare("delete from oauth_refresh_tokens where expires_at < ?").run(nowSeconds);
+    const gracePeriodSeconds = 30 * 24 * 60 * 60;
+    this.database.sqlite.prepare("delete from oauth_access_tokens where expires_at < ?").run(nowSeconds - gracePeriodSeconds);
+    this.database.sqlite.prepare("delete from oauth_refresh_tokens where expires_at < ?").run(nowSeconds - gracePeriodSeconds);
   }
 }
 
