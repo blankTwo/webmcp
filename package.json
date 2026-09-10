@@ -1,6 +1,6 @@
 {
   "name": "webmcp",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "Expose secure local coding workspaces to ChatGPT and Web AI agents through MCP.",
   "type": "module",
   "main": "dist/server.js",
