@@ -262,7 +262,26 @@ function serverInstructions(config: ServerConfig): string {
 
   const inspection = config.toolMode !== "full"
     ? `In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use ${toolNames.shell} with command-line tools such as grep, rg, find, ls, and tree for search and directory inspection. `
-    : `Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. `;
+    : "";
+
+  const toolSelectionGuidance = `
+
+# Tool selection guide (read this before code inspection or editing)
+
+WebMCP provides semantic, symbol-aware tools (${toolNames.findSymbol}, ${toolNames.getSymbolsOverview}, ${toolNames.codeExplore}, ${toolNames.replaceSymbolBody}, ${toolNames.insertSymbol}). Symbolic tools are the PRIMARY tools for reading and modifying code. Traditional tools (${toolNames.grep}, ${toolNames.read}, ${toolNames.glob}, ${toolNames.edit}) are SECONDARY and must not be used on code files when a symbolic tool fits.
+
+## Tool selection mapping:
+- Inspect file outline / structure -> ${toolNames.getSymbolsOverview} or ${toolNames.codeExplore}
+- Read a function/class/method body -> ${toolNames.findSymbol} (with includeBody: true). Do NOT read the whole file just to see one method.
+- Find a symbol across workspace -> ${toolNames.findSymbol} (with name or name/path pattern, e.g. 'calculateSignature' or 'XimalayaTopicSelector')
+- Modify a function or class body -> ${toolNames.replaceSymbolBody} or ${toolNames.insertSymbol}
+- Search plain text, UI copy, or non-code files (json, yaml, md) -> ${toolNames.grep}
+- Multi-file code modifications or complex refactor -> ${toolNames.applyPatch}
+- Targeted edits to non-symbol code or config -> ${toolNames.edit}
+
+Do NOT read entire large code files with ${toolNames.read} when ${toolNames.findSymbol} can retrieve the exact implementation in 1 call.
+Do NOT use ${toolNames.grep} to search for function or class definitions when ${toolNames.findSymbol} is designed for this.
+`;
 
   const skills = config.skillsEnabled
     ? `When a task may match a skill, use ${toolNames.skillsList} to discover available skills and ${toolNames.skillRead} to load only the matching skill before proceeding. Do not enumerate or preload skills when they are irrelevant. `
@@ -274,7 +293,7 @@ function serverInstructions(config: ServerConfig): string {
     ? " Use exec_command for long-running or interactive commands, write_stdin to poll or interact with them, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session."
     : "";
 
-  return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}Prefer ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
+  return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}${toolSelectionGuidance}Prefer ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
 }
 
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {

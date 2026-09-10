@@ -101,7 +101,14 @@ export async function grepFilesTool(input: GrepToolInput, context: ToolContext):
   if (input.path) resolveAllowedPath(input.path, context.cwd, [context.root]);
   const tool = createGrepTool(context.cwd);
 
-  return runTool((params) => tool.execute("grep_files", params), input, context);
+  const initial = await runTool((params) => tool.execute("grep_files", params), input, context);
+  if (initial.isError && !input.literal) {
+    const errorText = initial.content.map((c) => (c.type === "text" ? c.text : "")).join(" ");
+    if (/regex parse error/i.test(errorText) || /syntax error/i.test(errorText)) {
+      return runTool((params) => tool.execute("grep_files", params), { ...input, literal: true }, context);
+    }
+  }
+  return initial;
 }
 
 export async function findFilesTool(input: FindToolInput, context: ToolContext): Promise<ToolResponse> {
