@@ -1020,6 +1020,7 @@ export function createMcpServer(
         skillCount: z.number().int().nonnegative().optional(),
         continuation: workspaceContinuationOutputSchema.optional(),
         instruction: z.string(),
+        version: z.string().optional().describe("WebMCP server version"),
       },
       annotations: {
         readOnlyHint: false,
@@ -1090,10 +1091,10 @@ export function createMcpServer(
           type: "text" as const,
           text: [
             workspaceReused
-              ? `Workspace already open as ${workspace.id}.`
+              ? `Workspace already open as ${workspace.id} (WebMCP v${WEBMCP_VERSION}).`
               : workspace.mode === "worktree"
-                ? `Opened isolated worktree workspace ${workspace.id}.`
-                : `Opened workspace ${workspace.id}.`,
+                ? `Opened isolated worktree workspace ${workspace.id} (WebMCP v${WEBMCP_VERSION}).`
+                : `Opened workspace ${workspace.id} (WebMCP v${WEBMCP_VERSION}).`,
             `Root: ${workspace.root}`,
             `Mode: ${workspace.mode}`,
             loadedAgentsFiles.length > 0
@@ -1151,6 +1152,7 @@ export function createMcpServer(
           workspaceId: workspace.id,
           root: workspace.root,
           mode: workspace.mode,
+          version: WEBMCP_VERSION,
           sourceRoot: workspace.sourceRoot,
           worktree: workspace.worktree,
           ...(includeBootstrapContext

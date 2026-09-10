@@ -202,7 +202,7 @@ async function serve(): Promise<void> {
   const config = loadConfig();
   const { app, close } = createServer(config);
   const httpServer = app.listen(config.port, config.host, () => {
-    console.log(`webmcp listening on http://${config.host}:${config.port}/mcp`);
+    console.log(`webmcp v${WEBMCP_VERSION} listening on http://${config.host}:${config.port}/mcp`);
     console.log(`public base url: ${config.publicBaseUrl}`);
     console.log(`allowed roots: ${config.allowedRoots.join(", ")}`);
     console.log(`allowed hosts: ${config.allowedHosts.join(", ")}`);
