@@ -284,6 +284,12 @@ WebMCP provides semantic, symbol-aware tools (${toolNames.findSymbol}, ${toolNam
 
 Do NOT read entire large code files with ${toolNames.read} when ${toolNames.findSymbol} can retrieve the exact implementation in 1 call.
 Do NOT use ${toolNames.grep} to search for function or class definitions when ${toolNames.findSymbol} is designed for this.
+
+## Engineering discipline for high-stability execution:
+- Understand before changing: Use ${toolNames.findSymbol} (with includeBody: true) to inspect the exact implementation before editing. Never guess code structure.
+- Minimal change scope: Make the smallest change that satisfies the request. Do NOT perform unsolicited refactoring on surrounding code, do NOT add premature abstractions, and do NOT alter unaffected files.
+- Terse and direct responses: State findings, results, and outcomes directly in 1-3 sentences. Do not narrate internal thinking-aloud or reprint huge logs unless requested.
+- Maintain existing files: Prefer editing existing files rather than creating new ones. Never create unsolicited *.md or README files unless explicitly asked.
 `;
 
   const skills = config.skillsEnabled
@@ -2112,6 +2118,7 @@ server.registerTool(
         path: z.string().optional().describe("Optional file path relative to workspace root. If omitted, searches across code files in workspace."),
         includeBody: z.boolean().optional().describe("If true, returns the complete implementation body of matching symbols. Defaults to false."),
         substringMatching: z.boolean().optional().describe("If true (default), matches any symbol containing name as substring. If false, requires exact symbol name match."),
+        maxMatches: z.number().int().positive().optional().describe("Maximum symbol matches to display in detail (default 25). If exceeded, a compact file overview is returned to prevent token explosion."),
       },
       outputSchema: resultOutputSchema({
         matches: z.array(
@@ -2129,7 +2136,7 @@ server.registerTool(
       }),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, name, path, includeBody, substringMatching }, { _meta }) => {
+    async ({ workspaceId, name, path, includeBody, substringMatching, maxMatches }, { _meta }) => {
       const startedAt = performance.now();
       const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       
@@ -2175,13 +2182,31 @@ server.registerTool(
         }
       }
 
+      const limit = maxMatches ?? 25;
       const lines: string[] = [
         `Found ${allMatches.length} symbol match(es) for '${name}':`,
       ];
-      for (const m of allMatches) {
-        lines.push(`\n- [${m.kind}] ${m.filePath} -> ${m.namePath} [L${m.startLine}-L${m.endLine}]${m.signature ? `\n  ${m.signature}` : ""}`);
-        if (m.body) {
-          lines.push(`\n\`\`\`\n${m.body}\n\`\`\``);
+
+      if (allMatches.length > limit) {
+        const countsByFile = new Map<string, number>();
+        for (const m of allMatches) {
+          countsByFile.set(m.filePath, (countsByFile.get(m.filePath) ?? 0) + 1);
+        }
+        lines.push(`\n⚠️ Total ${allMatches.length} matches exceeded compact display limit (${limit}). Grouped overview by file:`);
+        for (const [file, count] of countsByFile.entries()) {
+          lines.push(`- ${file} (${count} matching symbol${count > 1 ? "s" : ""})`);
+        }
+        lines.push(`\nFirst ${Math.min(limit, 8)} symbols:`);
+        for (const m of allMatches.slice(0, Math.min(limit, 8))) {
+          lines.push(`- [${m.kind}] ${m.filePath} -> ${m.namePath} [L${m.startLine}-L${m.endLine}]${m.signature ? `: ${m.signature}` : ""}`);
+        }
+        lines.push(`\n💡 Tip: Refine your search by specifying 'path' (e.g. path: '${allMatches[0]?.filePath}') or setting exact name.`);
+      } else {
+        for (const m of allMatches) {
+          lines.push(`\n- [${m.kind}] ${m.filePath} -> ${m.namePath} [L${m.startLine}-L${m.endLine}]${m.signature ? `\n  ${m.signature}` : ""}`);
+          if (m.body) {
+            lines.push(`\n\`\`\`\n${m.body}\n\`\`\``);
+          }
         }
       }
 
@@ -2303,9 +2328,27 @@ server.registerTool(
       const lines: string[] = [
         `Found ${allRefs.length} reference(s) to '${name}':`,
       ];
-      for (const r of allRefs) {
-        const symbolDesc = r.referencingSymbol ? ` in [${r.kind ?? "symbol"}] ${r.referencingSymbol}` : "";
-        lines.push(`- ${r.filePath}:L${r.line}:C${r.column}${symbolDesc}\n    ${r.context}`);
+
+      if (allRefs.length > 30) {
+        const countsByFile = new Map<string, number>();
+        for (const r of allRefs) {
+          countsByFile.set(r.filePath, (countsByFile.get(r.filePath) ?? 0) + 1);
+        }
+        lines.push(`\n⚠️ Total ${allRefs.length} references exceeded display limit (30). Reference counts by file:`);
+        for (const [file, count] of countsByFile.entries()) {
+          lines.push(`- ${file} (${count} reference${count > 1 ? "s" : ""})`);
+        }
+        lines.push(`\nFirst 8 reference locations:`);
+        for (const r of allRefs.slice(0, 8)) {
+          const symbolDesc = r.referencingSymbol ? ` in [${r.kind ?? "symbol"}] ${r.referencingSymbol}` : "";
+          lines.push(`- ${r.filePath}:L${r.line}:C${r.column}${symbolDesc}\n    ${r.context}`);
+        }
+        lines.push(`\n💡 Tip: Specify a target directory or file in 'path' to inspect references within a specific module.`);
+      } else {
+        for (const r of allRefs) {
+          const symbolDesc = r.referencingSymbol ? ` in [${r.kind ?? "symbol"}] ${r.referencingSymbol}` : "";
+          lines.push(`- ${r.filePath}:L${r.line}:C${r.column}${symbolDesc}\n    ${r.context}`);
+        }
       }
 
       const text = lines.join("\n");
