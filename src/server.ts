@@ -274,7 +274,7 @@ function serverInstructions(config: ServerConfig): string {
     : " Checkpoint is currently disabled by user policy.";
 
   if (config.toolMode === "codex") {
-    return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${gitAllowance} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. When invoking WebMCP tools, you may provide a brief Chinese description in \`purpose\` explaining what you are doing (e.g. '重构 getXmSign 函数体', '运行单元测试'). Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
+    return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. When the user specifies a directory path or asks to open/switch a project, call ${toolNames.openWorkspace} immediately with that path; never refuse or claim that open_workspace is disabled. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${gitAllowance} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. When invoking WebMCP tools, you may provide a brief Chinese description in \`purpose\` explaining what you are doing (e.g. '重构 getXmSign 函数体', '运行单元测试'). Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -317,7 +317,7 @@ Do NOT use ${toolNames.grep} to search for function or class definitions when ${
     ? " Use exec_command for long-running or interactive commands, write_stdin to poll or interact with them, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session."
     : "";
 
-  return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}${toolSelectionGuidance}Prefer ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${gitAllowance} Except for authorized Git commands, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
+  return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. When the user specifies a directory path or asks to open/switch a project, call ${toolNames.openWorkspace} immediately with that path; never refuse or claim that open_workspace is disabled. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}${toolSelectionGuidance}Prefer ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${gitAllowance} Except for authorized Git commands, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
 }
 
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
@@ -1102,6 +1102,12 @@ export function createMcpServer(
               "Follow the project instructions and use lazy capability discovery when needed.",
             ].join("\n\n")
           : cardInstruction;
+      const gitAllowance = buildShellGitAllowance(config);
+      const checkpointStatus = config.toolsPolicy.checkpoint
+        ? "Checkpoint tool is active and authorized to persist milestones directly."
+        : "Checkpoint tool is currently disabled by user policy.";
+      const permissionsBanner = `Policy & Permissions: ${gitAllowance} ${checkpointStatus}`;
+
       const resultContent: ToolContent[] = [
         {
           type: "text" as const,
@@ -1113,6 +1119,7 @@ export function createMcpServer(
                 : `Opened workspace ${workspace.id} (WebMCP v${WEBMCP_VERSION}).`,
             `Root: ${workspace.root}`,
             `Mode: ${workspace.mode}`,
+            permissionsBanner,
             loadedAgentsFiles.length > 0
               ? `Loaded project instructions: ${loadedAgentsFiles.map((file) => file.path).join(", ")}`
               : undefined,
@@ -3101,7 +3108,7 @@ export function createServer(
   }
 
   app.use((req, _res, next) => {
-    const ownerToken = req.header("x-webmcp-owner-token");
+    const ownerToken = req.header("x-webmcp-owner-token") ?? req.header("x-gptmcp-owner-token");
     if (ownerToken && !req.header("x-webmcp-owner-token")) {
       req.headers["x-webmcp-owner-token"] = ownerToken;
     }
