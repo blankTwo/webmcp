@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 import type { LoggingConfig, LogFormat, LogLevel } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
-import { webmcpSkillsDir, loadWebmcpFiles } from "./user-config.js";
+import { webmcpSkillsDir, loadWebmcpFiles, type ToolsPolicy } from "./user-config.js";
 
 export type ToolMode = "minimal" | "full" | "codex";
 export type WidgetMode = "off";
@@ -29,6 +29,7 @@ export interface ServerConfig {
   webmcpSkillsDir: string;
   agentDir: string;
   logging: LoggingConfig;
+  toolsPolicy: Required<ToolsPolicy>;
 }
 
 function parsePort(value: string | number | undefined): number {
@@ -251,6 +252,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     webmcpSkillsDir: webmcpSkillsDir(env),
     agentDir: resolve(expandHomePath(configEnv(env, "AGENT_DIR") ?? files.config.agentDir ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
+    toolsPolicy: parseToolsPolicy(files.config.toolsPolicy),
+  };
+}
+
+function parseToolsPolicy(policy?: ToolsPolicy): Required<ToolsPolicy> {
+  return {
+    gitStatus: policy?.gitStatus ?? true,
+    gitDiff: policy?.gitDiff ?? true,
+    gitLog: policy?.gitLog ?? true,
+    gitAdd: policy?.gitAdd ?? true,
+    gitCommit: policy?.gitCommit ?? true,
+    gitPull: policy?.gitPull ?? true,
+    gitPush: policy?.gitPush ?? true,
+    checkpoint: policy?.checkpoint ?? true,
+    historySearch: policy?.historySearch ?? true,
+    runBuildAndTest: policy?.runBuildAndTest ?? true,
   };
 }
 

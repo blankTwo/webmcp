@@ -80,16 +80,21 @@ async function ensureConfigured(): Promise<void> {
   if (process.env.WEBMCP_OAUTH_OWNER_TOKEN ?? process.env.WEBMCP_OAUTH_OWNER_TOKEN) return;
 
   if (!input.isTTY || !output.isTTY) {
-    throw new Error(
-      [
-        "WebMCP is not configured and this terminal is non-interactive.",
-        "",
-        "Run:",
-        "  webmcp init",
-        "",
-        "Or provide WEBMCP_OAUTH_OWNER_TOKEN and WEBMCP_ALLOWED_ROOTS.",
-      ].join("\n"),
-    );
+    // Automatically generate safe default configuration for headless / background service starts
+    const defaultRoots = [process.cwd()];
+    const config = {
+      host: "127.0.0.1",
+      port: 7676,
+      allowedRoots: defaultRoots,
+      publicBaseUrl: null,
+    };
+    const auth = {
+      ownerToken: generateOwnerToken(),
+    };
+    writeWebmcpConfig(config);
+    writeWebmcpAuth(auth);
+    console.log("[webmcp] Auto-generated default configuration for non-interactive startup.");
+    return;
   }
 
   await runInit({ force: false });

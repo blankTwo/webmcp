@@ -1072,11 +1072,44 @@ async fn revert_workspace_file(workspace_path: Option<String>, file_path: String
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ToolsPolicyInfo {
+    git_status: bool,
+    git_diff: bool,
+    git_log: bool,
+    git_add: bool,
+    git_commit: bool,
+    git_pull: bool,
+    git_push: bool,
+    checkpoint: bool,
+    history_search: bool,
+    run_build_and_test: bool,
+}
+
+impl Default for ToolsPolicyInfo {
+    fn default() -> Self {
+        Self {
+            git_status: true,
+            git_diff: true,
+            git_log: true,
+            git_add: true,
+            git_commit: true,
+            git_pull: true,
+            git_push: true,
+            checkpoint: true,
+            history_search: true,
+            run_build_and_test: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WebmcpConfigInfo {
     public_base_url: Option<String>,
     owner_token: Option<String>,
     allowed_roots: Vec<String>,
     config_dir: Option<String>,
+    tools_policy: ToolsPolicyInfo,
 }
 
 #[tauri::command]
@@ -1094,12 +1127,19 @@ async fn get_webmcp_config() -> Result<WebmcpConfigInfo, String> {
     let config_file = dir.join("config.json");
     let mut public_base_url = None;
     let mut allowed_roots = Vec::new();
+    let mut tools_policy = ToolsPolicyInfo::default();
+
     if config_file.is_file() {
         if let Ok(content) = fs::read_to_string(&config_file) {
             if let Ok(v) = serde_json::from_str::<Value>(&content) {
                 public_base_url = v.get("publicBaseUrl").and_then(Value::as_str).map(str::to_owned);
                 if let Some(roots) = v.get("allowedRoots").and_then(Value::as_array) {
                     allowed_roots = roots.iter().filter_map(|r| r.as_str().map(str::to_owned)).collect();
+                }
+                if let Some(tp) = v.get("toolsPolicy") {
+                    if let Ok(parsed_tp) = serde_json::from_value::<ToolsPolicyInfo>(tp.clone()) {
+                        tools_policy = parsed_tp;
+                    }
                 }
             }
         }
@@ -1120,6 +1160,7 @@ async fn get_webmcp_config() -> Result<WebmcpConfigInfo, String> {
         owner_token: token,
         allowed_roots,
         config_dir: Some(dir.to_string_lossy().to_string()),
+        tools_policy,
     })
 }
 
@@ -1216,6 +1257,45 @@ async fn save_webmcp_allowed_roots(roots: Vec<String>) -> Result<WebmcpConfigInf
 
     config_val["allowedRoots"] = serde_json::json!(roots);
     let _ = fs::write(&config_file, serde_json::to_string_pretty(&config_val).unwrap_or_default());
+
+    get_webmcp_config().await
+}
+
+#[tauri::command]
+async fn save_webmcp_tools_policy(policy: ToolsPolicyInfo) -> Result<WebmcpConfigInfo, String> {
+    let dir = if let Ok(Some(existing)) = active_config_dir() {
+        existing
+    } else {
+        let home = env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| "无法解析用户主目录".to_string())?;
+        let config_dir = home.join(".webmcp");
+        let _ = fs::create_dir_all(&config_dir);
+        config_dir
+    };
+
+    let config_file = dir.join("config.json");
+    let mut config_val: Value = if config_file.is_file() {
+        fs::read_to_string(&config_file)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({
+            "host": "127.0.0.1",
+            "port": 7676,
+            "artifactsEnabled": true
+        })
+    };
+
+    config_val["toolsPolicy"] = serde_json::to_value(&policy).unwrap_or_default();
+    let _ = fs::write(&config_file, serde_json::to_string_pretty(&config_val).unwrap_or_default());
+
+    // Auto restart service if currently running so updated prompt/policies take effect immediately
+    if check_health().await {
+        let _ = restart_webmcp_service().await;
+    }
 
     get_webmcp_config().await
 }
@@ -1418,6 +1498,7 @@ pub fn run() {
             get_webmcp_config,
             set_webmcp_public_url,
             save_webmcp_allowed_roots,
+            save_webmcp_tools_policy,
             select_folder_dialog,
             toggle_float_ball,
             is_float_ball_visible,

@@ -9,6 +9,19 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 
+export interface ToolsPolicy {
+  gitStatus?: boolean;
+  gitDiff?: boolean;
+  gitLog?: boolean;
+  gitAdd?: boolean;
+  gitCommit?: boolean;
+  gitPull?: boolean;
+  gitPush?: boolean;
+  checkpoint?: boolean;
+  historySearch?: boolean;
+  runBuildAndTest?: boolean;
+}
+
 export interface WebmcpUserConfig {
   host?: string;
   port?: number;
@@ -20,6 +33,7 @@ export interface WebmcpUserConfig {
   artifactsEnabled?: boolean;
   artifactMaxFileBytes?: number;
   agentDir?: string;
+  toolsPolicy?: ToolsPolicy;
 }
 
 export interface WebmcpAuthConfig {

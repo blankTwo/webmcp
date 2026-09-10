@@ -144,8 +144,21 @@ const SHELL_TOOL_ANNOTATIONS = {
   idempotentHint: false,
   openWorldHint: true,
 };
-const SHELL_GIT_WRITE_ALLOWANCE =
-  "Git metadata writes are an explicit exception: git init, git add, and git commit are allowed when the user asks to initialize, stage, or commit. Do not run git push unless the user explicitly requests it.";
+
+function buildShellGitAllowance(config: ServerConfig): string {
+  const p = config.toolsPolicy;
+  const allowedOps: string[] = ["git init"];
+  if (p.gitStatus) allowedOps.push("git status");
+  if (p.gitDiff) allowedOps.push("git diff");
+  if (p.gitLog) allowedOps.push("git log");
+  if (p.gitAdd) allowedOps.push("git add");
+  if (p.gitCommit) allowedOps.push("git commit");
+  if (p.gitPull) allowedOps.push("git pull");
+  if (p.gitPush) allowedOps.push("git push (when explicitly requested by user)");
+
+  return `Git operations authorized by user policy: ${allowedOps.join(", ")}. When the user asks to commit, push, pull, or sync, proceed with the authorized git commands directly without claiming they are disabled.`;
+}
+
 const MOVE_TOOL_ANNOTATIONS = {
   readOnlyHint: false,
   destructiveHint: true,
@@ -255,11 +268,13 @@ function serverInstructions(config: ServerConfig): string {
   const artifactInstruction = config.artifactsEnabled && isArtifactDownloadSupportedPlatform()
     ? " When the user supplies or generates a file that is not present on the WebMCP host, use download_artifact with its native file value, the existing workspace ID, and a suitable relative destination path chosen from the user's request and project structure. The tool refuses to overwrite an existing destination and returns the normalized workspace-relative path. Use normal workspace tools when explicit inspection, replacement, movement, renaming, or deletion is needed. Do not recreate binary files with write/edit calls or place signed URLs, native file objects, base64 content, or invented host paths in shell commands or logs."
     : "";
-  const memoryInstruction =
-    " Use checkpoint only at meaningful milestones, before switching tasks, or when the user pauses work; do not checkpoint after every tool call. Use history_search only when a previous checkpoint is needed to recover an older decision or detail that is not in the current continuation. Compatibility: if the user says exactly `checkpoint` but this conversation does not expose the checkpoint tool, use the existing bash tool with command `checkpoint` and immediately follow the returned machine instruction without asking the user for more input.";
+  const gitAllowance = buildShellGitAllowance(config);
+  const memoryInstruction = config.toolsPolicy.checkpoint
+    ? " When the user asks for a checkpoint or milestone save, or before switching tasks, you MUST call the checkpoint tool directly to persist progress and decisions into the workspace. Never claim that checkpoint is disabled; infer the goal and currentTask from the conversation if not explicitly provided. Use history_search when an older decision or checkpoint is needed."
+    : " Checkpoint is currently disabled by user policy.";
 
   if (config.toolMode === "codex") {
-    return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${SHELL_GIT_WRITE_ALLOWANCE} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. When invoking WebMCP tools, you may provide a brief Chinese description in \`purpose\` explaining what you are doing (e.g. '重构 getXmSign 函数体', '运行单元测试'). Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
+    return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. Use ${toolNames.codeExplore} for compact source structure, ${toolNames.read} for one or several direct file reads, ${toolNames.applyPatch} for transactional multi-file content changes, move_file for explicit moves or renames, and exec_command for inspection, tests, builds, and other commands. ${gitAllowance} Use ${toolNames.skillsList} only when skill discovery is relevant, then ${toolNames.skillRead} for one matching skill. Use write_stdin to poll or interact with running processes, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session. When invoking WebMCP tools, you may provide a brief Chinese description in \`purpose\` explaining what you are doing (e.g. '重构 getXmSign 函数体', '运行单元测试'). Follow instructions returned by ${toolNames.openWorkspace}. Keep final user responses concise. Do not reprint entire file contents or long terminal logs in the chat unless specifically requested.${memoryInstruction}${artifactInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -302,7 +317,7 @@ Do NOT use ${toolNames.grep} to search for function or class definitions when ${
     ? " Use exec_command for long-running or interactive commands, write_stdin to poll or interact with them, list_processes/get_process to inspect managed process state without consuming output, and kill_process to terminate a managed process session."
     : "";
 
-  return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}${toolSelectionGuidance}Prefer ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for that Git metadata exception, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
+  return `Use WebMCP for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree. That call binds the current ChatGPT conversation to the workspace, so subsequent tools should normally omit workspaceId; pass it only for compatibility or disambiguation. Open another workspace only when changing projects or creating another isolated worktree. ${agentsMd}${skills}${inspection}${toolSelectionGuidance}Prefer ${toolNames.applyPatch} for transactional multi-file modifications, ${toolNames.edit} for a small single-file exact replacement, ${toolNames.write} only for new files or complete rewrites, move_file for moves or renames, and ${toolNames.shell} for one-shot tests, builds, git inspection, package scripts, and commands that are better executed by the shell. ${gitAllowance} Except for authorized Git commands, do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${managedProcessInstruction}${memoryInstruction}${artifactInstruction}`;
 }
 
 function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
@@ -623,16 +638,17 @@ function registerManagedProcessTools(
   workspaces: WorkspaceRegistry,
   processSessions: ProcessSessionManager,
 ): void {
+  const gitAllowance = buildShellGitAllowance(config);
   server.registerTool(
     "exec_command",
     {
       title: "Execute command",
       description:
-        `Run a command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, long-running processes, and approved Git metadata writes. ${SHELL_GIT_WRITE_ALLOWANCE}`,
+        `Run a command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, long-running processes, and approved Git commands. ${gitAllowance}`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         purpose: optionalPurposeSchema(),
-        cmd: z.string().min(1).describe(`Shell command to execute. ${SHELL_GIT_WRITE_ALLOWANCE}`),
+        cmd: z.string().min(1).describe(`Shell command to execute. ${gitAllowance}`),
         tty: z
           .boolean()
           .optional()
@@ -1474,8 +1490,8 @@ server.registerTool(
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         purpose: optionalPurposeSchema(),
-        goal: z.string().min(1).describe("Overall project goal that should survive into the next conversation."),
-        currentTask: z.string().min(1).describe("The task or phase currently in progress."),
+        goal: z.string().optional().describe("Overall project goal that should survive into the next conversation. Defaults to current workspace progress if omitted."),
+        currentTask: z.string().optional().describe("The task or phase currently in progress. Defaults to current task checkpoint if omitted."),
         completed: z.array(z.string()).optional().describe("Important work already completed."),
         decisions: z.array(z.string()).optional().describe("Important implementation or product decisions and their concise rationale."),
         files: z.array(z.string()).optional().describe("Important workspace-relative files involved in the current work."),
@@ -1499,9 +1515,14 @@ server.registerTool(
     async ({ workspaceId, purpose, ...input }, { _meta }) => {
       const startedAt = performance.now();
       const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const effectiveInput = {
+        ...input,
+        goal: input.goal?.trim() || `Continue development in ${workspace.root}`,
+        currentTask: input.currentTask?.trim() || purpose?.trim() || "Milestone checkpoint",
+      };
       const { state, facts, checkpoint } = await saveWorkspaceCheckpoint(
         workspace.id,
-        input,
+        effectiveInput,
         openAiConversationScopeId(_meta),
         startedAt,
         "tool",
@@ -2902,20 +2923,21 @@ server.registerTool(
   }
 
   if (config.toolMode !== "codex") {
+  const gitAllowance = buildShellGitAllowance(config);
   server.registerTool(
     toolNames.shell,
     {
       title: "Bash",
       description: config.toolMode !== "full"
-        ? `Run a shell command in a workspace. Underlying shell: Git Bash (standard Unix tools like grep, awk, find, sed work natively; do NOT use PowerShell cmdlets or Windows findstr; do NOT run long-running/background servers that do not exit). Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, search, file discovery, and directory inspection. ${SHELL_GIT_WRITE_ALLOWANCE} In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by WebMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`
-        : `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git metadata writes, package scripts, and commands that are better executed by the shell. ${SHELL_GIT_WRITE_ALLOWANCE} Except for the approved Git metadata writes, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Legacy checkpoint compatibility: command exactly \`checkpoint\` is intercepted by WebMCP and is never executed by the shell; follow the returned instruction immediately. This is powerful execution and should only be exposed behind strong authentication.`,
+        ? `Run a shell command in a workspace. Underlying shell: Git Bash (standard Unix tools like grep, awk, find, sed work natively; do NOT use PowerShell cmdlets or Windows findstr; do NOT run long-running/background servers that do not exit). Use only for tests, builds, git inspection, approved Git writes, package scripts, search, file discovery, and directory inspection. ${gitAllowance} In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Except for authorized Git commands, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. This is powerful execution and should only be exposed behind strong authentication.`
+        : `Run a shell command in a workspace. Use only for tests, builds, git inspection, approved Git writes, package scripts, and commands that are better executed by the shell. ${gitAllowance} Except for authorized Git commands, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. This is powerful execution and should only be exposed behind strong authentication.`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         purpose: optionalPurposeSchema(),
         command: z
           .string()
           .describe(
-            `Shell command to run. ${SHELL_GIT_WRITE_ALLOWANCE} Except for those Git metadata writes, do not create or modify project files; use ${toolNames.edit} or ${toolNames.write} for file changes.`,
+            `Shell command to run. ${gitAllowance} Except for authorized Git commands, do not create or modify project files; use ${toolNames.edit} or ${toolNames.write} for file changes.`,
           ),
         workingDirectory: z
           .string()

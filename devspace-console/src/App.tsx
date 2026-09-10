@@ -129,6 +129,19 @@ interface GitDiffFile {
   diff: string;
 }
 
+interface ToolsPolicyInfo {
+  gitStatus: boolean;
+  gitDiff: boolean;
+  gitLog: boolean;
+  gitAdd: boolean;
+  gitCommit: boolean;
+  gitPull: boolean;
+  gitPush: boolean;
+  checkpoint: boolean;
+  historySearch: boolean;
+  runBuildAndTest: boolean;
+}
+
 interface GitDiffSnapshot {
   workspaceRoot: string;
   isGit: boolean;
@@ -2040,11 +2053,27 @@ function App() {
   const [tunnelActionBusy, setTunnelActionBusy] = useState(false);
   const [tunnelFeedback, setTunnelFeedback] = useState<string | null>(null);
   const [showTunnelLogs, setShowTunnelLogs] = useState(false);
-  const [webmcpConfig, setWebmcpConfig] = useState<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null } | null>(null);
+  const [webmcpConfig, setWebmcpConfig] = useState<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; toolsPolicy?: ToolsPolicyInfo } | null>(null);
   const [customDomainInput, setCustomDomainInput] = useState<string>("");
   const [domainSaving, setDomainSaving] = useState(false);
   const [domainFeedback, setDomainFeedback] = useState<string | null>(null);
   const [showDomainEditor, setShowDomainEditor] = useState(false);
+
+  // Tools Execution Policy state
+  const [toolsPolicyDraft, setToolsPolicyDraft] = useState<ToolsPolicyInfo>({
+    gitStatus: true,
+    gitDiff: true,
+    gitLog: true,
+    gitAdd: true,
+    gitCommit: true,
+    gitPull: true,
+    gitPush: true,
+    checkpoint: true,
+    historySearch: true,
+    runBuildAndTest: true,
+  });
+  const [toolsPolicySaving, setToolsPolicySaving] = useState(false);
+  const [toolsPolicyFeedback, setToolsPolicyFeedback] = useState<string | null>(null);
 
   // Desktop Floating Ball state
   const [floatBallActive, setFloatBallActive] = useState(false);
@@ -2142,15 +2171,35 @@ function App() {
 
   const updateWebmcpConfig = useCallback(async () => {
     try {
-      const config = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>("get_webmcp_config");
+      const config = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; toolsPolicy?: ToolsPolicyInfo }>("get_webmcp_config");
       setWebmcpConfig(config);
       if (config.publicBaseUrl) {
         setCustomDomainInput(config.publicBaseUrl);
+      }
+      if (config.toolsPolicy) {
+        setToolsPolicyDraft(config.toolsPolicy);
       }
     } catch {
       // ignore
     }
   }, []);
+
+  const handleSaveToolsPolicy = async (newPolicy: ToolsPolicyInfo) => {
+    setToolsPolicySaving(true);
+    setToolsPolicyFeedback("正在保存 Tools 权限策略并同步重启服务…");
+    try {
+      const res = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; toolsPolicy?: ToolsPolicyInfo }>("save_webmcp_tools_policy", { policy: newPolicy });
+      setWebmcpConfig(res);
+      if (res.toolsPolicy) setToolsPolicyDraft(res.toolsPolicy);
+      setToolsPolicyFeedback("✅ Tools 工具权限已生效并同步至 WebMCP 服务！");
+      await refreshAll();
+    } catch (err) {
+      setToolsPolicyFeedback(`保存失败: ${String(err)}`);
+    } finally {
+      setToolsPolicySaving(false);
+      setTimeout(() => setToolsPolicyFeedback(null), 5000);
+    }
+  };
 
   const handleSaveDomain = async (urlToSave?: string | null) => {
     setDomainSaving(true);
@@ -3274,6 +3323,159 @@ function App() {
                         : "❌ 未检测到 cloudflared。可运行 `winget install --id Cloudflare.cloudflared` 安装"}
                     </span>
                   </div>
+                </div>
+              </div>
+
+              {/* Tools Execution & Permission Policy Card */}
+              <div className="monitor-service-manager-card">
+                <div className="monitor-service-manager-header">
+                  <div className="monitor-service-manager-info">
+                    <span className="monitor-service-manager-icon online">
+                      <ShieldCheck size={22} />
+                    </span>
+                    <div className="monitor-service-manager-title">
+                      <strong>Tools 工具操作权限与执行策略</strong>
+                      <span>
+                        统一集中管控 ChatGPT 在本机会话中允许执行的 Git 命令、Checkpoint 状态落盘与构建测试权限
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    className="service-action-btn start"
+                    disabled={toolsPolicySaving}
+                    onClick={() => void handleSaveToolsPolicy(toolsPolicyDraft)}
+                    style={{ whiteSpace: "nowrap" }}
+                  >
+                    <Check size={14} />
+                    {toolsPolicySaving ? "正在同步保存…" : "保存并同步生效"}
+                  </button>
+                </div>
+
+                {toolsPolicyFeedback && (
+                  <div className="monitor-inline-error" style={{ background: "var(--monitor-panel-soft)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)", margin: "8px 0" }}>
+                    {toolsPolicyFeedback}
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginTop: 14 }}>
+                  {/* Git Operations Policy */}
+                  <div style={{ background: "var(--monitor-panel-soft)", border: "1px solid var(--monitor-line)", borderRadius: 8, padding: 14 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--monitor-text)" }}>
+                      <TerminalSquare size={16} color="var(--monitor-blue)" />
+                      <span>Git 版本控制权限白名单</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 12 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={toolsPolicyDraft.gitStatus}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, gitStatus: e.target.checked }))}
+                        />
+                        <span>允许 <code>git status</code> (查看工作区状态)</span>
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={toolsPolicyDraft.gitDiff}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, gitDiff: e.target.checked }))}
+                        />
+                        <span>允许 <code>git diff</code> (查看代码变动)</span>
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={toolsPolicyDraft.gitLog}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, gitLog: e.target.checked }))}
+                        />
+                        <span>允许 <code>git log</code> (查看提交历史)</span>
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={toolsPolicyDraft.gitAdd}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, gitAdd: e.target.checked }))}
+                        />
+                        <span>允许 <code>git add</code> (暂存修改)</span>
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={toolsPolicyDraft.gitCommit}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, gitCommit: e.target.checked }))}
+                        />
+                        <span>允许 <code>git commit</code> (提交到本地)</span>
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", color: toolsPolicyDraft.gitPull ? "var(--monitor-green)" : "inherit" }}>
+                        <input
+                          type="checkbox"
+                          checked={toolsPolicyDraft.gitPull}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, gitPull: e.target.checked }))}
+                        />
+                        <strong>允许 <code>git pull</code> (拉取远程协同代码，不再拒答)</strong>
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", color: toolsPolicyDraft.gitPush ? "var(--monitor-green)" : "inherit" }}>
+                        <input
+                          type="checkbox"
+                          checked={toolsPolicyDraft.gitPush}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, gitPush: e.target.checked }))}
+                        />
+                        <strong>允许 <code>git push</code> (在用户明确要求时推送)</strong>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Persistence & Checkpoint Policy */}
+                  <div style={{ background: "var(--monitor-panel-soft)", border: "1px solid var(--monitor-line)", borderRadius: 8, padding: 14 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--monitor-text)" }}>
+                      <BookmarkCheck size={16} color="var(--monitor-green)" />
+                      <span>会话记忆与 Checkpoint 策略</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 12 }}>
+                      <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          style={{ marginTop: 2 }}
+                          checked={toolsPolicyDraft.checkpoint}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, checkpoint: e.target.checked }))}
+                        />
+                        <div>
+                          <strong>允许 checkpoint 状态落盘</strong>
+                          <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 2 }}>
+                            当收到 <code>checkpoint</code> 指令时自动落盘至 <code>.webmcp/checkpoints/</code> 与 <code>CHECKPOINT.md</code>，绝不拒答。
+                          </div>
+                        </div>
+                      </label>
+
+                      <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          style={{ marginTop: 2 }}
+                          checked={toolsPolicyDraft.historySearch}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, historySearch: e.target.checked }))}
+                        />
+                        <div>
+                          <span>允许 <code>history_search</code> (跨会话检索历史决策)</span>
+                        </div>
+                      </label>
+
+                      <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          style={{ marginTop: 2 }}
+                          checked={toolsPolicyDraft.runBuildAndTest}
+                          onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, runBuildAndTest: e.target.checked }))}
+                        />
+                        <div>
+                          <span>允许执行本地构建与单元测试 (<code>npm test</code>, <code>build</code> 等)</span>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 12 }}>
+                  💡 提示：更改策略后点击上方「保存并同步生效」，系统将直接更新 <code>~/.webmcp/config.json</code> 中的 <code>toolsPolicy</code> 并热重启核心服务，模型在此之后的每一次对话均会自动遵循该策略。
                 </div>
               </div>
 
