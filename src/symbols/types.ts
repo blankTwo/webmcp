@@ -37,6 +37,16 @@ export interface SymbolMatch {
   endLine: number;
   signature?: string;
   body?: string;
+  filePath?: string;
+}
+
+export interface SymbolReference {
+  filePath: string;
+  referencingSymbol?: string;
+  kind?: SymbolKind;
+  line: number;
+  column: number;
+  context: string;
 }
 
 export interface ReplaceSymbolResult {

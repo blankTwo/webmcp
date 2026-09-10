@@ -7,6 +7,7 @@ import type {
   SymbolMatch,
   SymbolNode,
   SymbolOverview,
+  SymbolReference,
 } from "./types.js";
 
 /**
@@ -520,16 +521,20 @@ export function findSymbol(
   content: string,
   namePattern: string,
   includeBody = false,
+  substringMatching = true,
 ): SymbolMatch[] {
   const pattern = namePattern.toLowerCase().trim();
   const matches: SymbolMatch[] = [];
 
   function search(nodes: SymbolNode[]): void {
     for (const node of nodes) {
-      const nameMatches =
-        node.name.toLowerCase() === pattern ||
-        node.namePath.toLowerCase() === pattern ||
-        node.namePath.toLowerCase().includes(pattern);
+      const nodeName = node.name.toLowerCase();
+      const nodePath = node.namePath.toLowerCase();
+
+      let nameMatches = nodeName === pattern || nodePath === pattern;
+      if (!nameMatches && substringMatching) {
+        nameMatches = nodePath.includes(pattern) || nodeName.includes(pattern);
+      }
 
       if (nameMatches) {
         let body: string | undefined;
@@ -549,6 +554,7 @@ export function findSymbol(
           endLine: node.endLine,
           signature: node.signature,
           body,
+          filePath: overview.filePath,
         });
       }
 
@@ -560,6 +566,78 @@ export function findSymbol(
 
   search(overview.symbols);
   return matches;
+}
+
+/**
+ * Find references / usages of a symbol within a file and associate each reference
+ * with its enclosing symbol (function, method, class) and a 1-line context snippet.
+ */
+export function findReferencesInFile(
+  filePath: string,
+  content: string,
+  symbolName: string,
+): SymbolReference[] {
+  const trimmedName = symbolName.trim();
+  if (!trimmedName) return [];
+
+  // Match identifier token with word boundaries
+  // Escape regex special chars in case symbolName has any
+  const escaped = trimmedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const identifierRegex = new RegExp(`\\b${escaped}\\b`, "g");
+
+  // Get symbol overview of this file to find enclosing symbols
+  const overview = getSymbolsOverview(filePath, content, 10);
+  const flatSymbols = flattenSymbols(overview.symbols);
+
+  const lines = content.split(/\r?\n/);
+  const lineOffsets: number[] = [];
+  let currentOffset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    lineOffsets.push(currentOffset);
+    // Find newline in original content
+    currentOffset += lines[i].length;
+    if (content[currentOffset] === "\r") currentOffset++;
+    if (content[currentOffset] === "\n") currentOffset++;
+  }
+
+  const references: SymbolReference[] = [];
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const lineText = lines[lineIdx];
+    let match: RegExpExecArray | null;
+    identifierRegex.lastIndex = 0;
+
+    while ((match = identifierRegex.exec(lineText)) !== null) {
+      const col = match.index + 1;
+      const charOffset = lineOffsets[lineIdx] + match.index;
+      const lineNum = lineIdx + 1;
+
+      // Find enclosing symbol (the tightest symbol whose [startChar, endChar] contains this offset)
+      let enclosing: SymbolNode | undefined;
+      for (const s of flatSymbols) {
+        // Exclude the symbol's own declaration name position
+        if (s.name === trimmedName && s.startLine === lineNum) {
+          continue;
+        }
+        if (charOffset >= s.startChar && charOffset <= s.endChar) {
+          if (!enclosing || (s.endChar - s.startChar < enclosing.endChar - enclosing.startChar)) {
+            enclosing = s;
+          }
+        }
+      }
+
+      references.push({
+        filePath,
+        referencingSymbol: enclosing?.namePath,
+        kind: enclosing?.kind,
+        line: lineNum,
+        column: col,
+        context: lineText.trim(),
+      });
+    }
+  }
+
+  return references;
 }
 
 /**

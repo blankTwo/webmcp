@@ -2,7 +2,7 @@ import { ensureWindowsHide } from "./windows-hide.js";
 ensureWindowsHide();
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile as readTextFile, writeFile as writeTextFile, realpath } from "node:fs/promises";
+import { readFile as readTextFile, writeFile as writeTextFile, realpath, stat } from "node:fs/promises";
 import { extname, join as joinPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -75,6 +75,7 @@ import {
   getSymbolsOverview,
   formatSymbolsOverview,
   findSymbol,
+  findReferencesInFile,
   replaceSymbolBody,
   insertSymbol,
   checkSyntaxDiagnostics,
@@ -188,6 +189,7 @@ const toolNames = {
   skillRead: "skill_read",
   getSymbolsOverview: "get_symbols_overview",
   findSymbol: "find_symbol",
+  findReferencingSymbols: "find_referencing_symbols",
   replaceSymbolBody: "replace_symbol_body",
   insertSymbol: "insert_symbol",
 } as const;
@@ -274,6 +276,7 @@ WebMCP provides semantic, symbol-aware tools (${toolNames.findSymbol}, ${toolNam
 - Inspect file outline / structure -> ${toolNames.getSymbolsOverview} or ${toolNames.codeExplore}
 - Read a function/class/method body -> ${toolNames.findSymbol} (with includeBody: true). Do NOT read the whole file just to see one method.
 - Find a symbol across workspace -> ${toolNames.findSymbol} (with name or name/path pattern, e.g. 'calculateSignature' or 'XimalayaTopicSelector')
+- Find references / callers of a function or class -> ${toolNames.findReferencingSymbols} (finds usages with enclosing function and 1-line snippet without flooding)
 - Modify a function or class body -> ${toolNames.replaceSymbolBody} or ${toolNames.insertSymbol}
 - Search plain text, UI copy, or non-code files (json, yaml, md) -> ${toolNames.grep}
 - Multi-file code modifications or complex refactor -> ${toolNames.applyPatch}
@@ -2101,6 +2104,7 @@ server.registerTool(
         name: z.string().min(1).describe("Symbol name or path (e.g. 'calculateSignature' or 'PaymentService/process')."),
         path: z.string().optional().describe("Optional file path relative to workspace root. If omitted, searches across code files in workspace."),
         includeBody: z.boolean().optional().describe("If true, returns the complete implementation body of matching symbols. Defaults to false."),
+        substringMatching: z.boolean().optional().describe("If true (default), matches any symbol containing name as substring. If false, requires exact symbol name match."),
       },
       outputSchema: resultOutputSchema({
         matches: z.array(
@@ -2118,7 +2122,7 @@ server.registerTool(
       }),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, name, path, includeBody }, { _meta }) => {
+    async ({ workspaceId, name, path, includeBody, substringMatching }, { _meta }) => {
       const startedAt = performance.now();
       const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
       
@@ -2155,7 +2159,7 @@ server.registerTool(
           const absolutePath = workspaces.resolvePath(workspace, relPath);
           const fileContent = await readTextFile(absolutePath, "utf8");
           const overview = getSymbolsOverview(relPath, fileContent, 10);
-          const matches = findSymbol(overview, fileContent, name, includeBody ?? false);
+          const matches = findSymbol(overview, fileContent, name, includeBody ?? false, substringMatching ?? true);
           for (const m of matches) {
             allMatches.push({ ...m, filePath: relPath });
           }
@@ -2193,6 +2197,129 @@ server.registerTool(
         structuredContent: {
           result: text,
           matches: allMatches,
+        },
+      };
+    },
+  );
+
+
+  server.registerTool(
+    toolNames.findReferencingSymbols,
+    {
+      title: "Find referencing symbols",
+      description:
+        "Find references and callers of a symbol across workspace code files. Returns the enclosing symbol (function, method, class), line number, and a 1-line snippet for each reference without flooding output.",
+      inputSchema: {
+        workspaceId: optionalWorkspaceIdSchema(),
+        purpose: optionalPurposeSchema(),
+        name: z.string().min(1).describe("Target symbol name to find references for (e.g. 'calculateSignature' or 'AuthService')."),
+        path: z.string().optional().describe("Optional relative file path or directory to restrict reference search. If omitted, searches across workspace code files."),
+        maxMatches: z.number().int().positive().optional().describe("Maximum number of references to return. Defaults to 50."),
+      },
+      outputSchema: resultOutputSchema({
+        references: z.array(
+          z.object({
+            filePath: z.string(),
+            referencingSymbol: z.string().optional(),
+            kind: z.string().optional(),
+            line: z.number(),
+            column: z.number(),
+            context: z.string(),
+          }),
+        ),
+      }),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ workspaceId, name, path, maxMatches }, { _meta }) => {
+      const startedAt = performance.now();
+      const workspace = resolveToolWorkspace(workspaces, workspaceId, _meta);
+      const limit = maxMatches ?? 50;
+
+      const filePaths: string[] = [];
+      if (path?.trim()) {
+        const targetPath = path.trim();
+        const absolutePath = workspaces.resolvePath(workspace, targetPath);
+        const st = await stat(absolutePath).catch(() => null);
+        if (st && st.isDirectory()) {
+          const discovery = await findFilesTool(
+            { pattern: "**/*", path: targetPath, limit: 200 },
+            { cwd: workspace.root, root: workspace.root },
+          );
+          if (!discovery.isError) {
+            const files = contentText(discovery.content)
+              .split("\n")
+              .map((l) => l.trim())
+              .filter((l) => l.length > 0 && !l.startsWith("[") && CODE_EXPLORE_EXTENSIONS.has(extname(l).toLowerCase()));
+            filePaths.push(...files);
+          }
+        } else {
+          filePaths.push(targetPath);
+        }
+      } else {
+        const discovery = await findFilesTool(
+          { pattern: "**/*", path: ".", limit: 200 },
+          { cwd: workspace.root, root: workspace.root },
+        );
+        if (!discovery.isError) {
+          const files = contentText(discovery.content)
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l.length > 0 && !l.startsWith("[") && CODE_EXPLORE_EXTENSIONS.has(extname(l).toLowerCase()));
+          filePaths.push(...files.slice(0, 100));
+        }
+      }
+
+      const allRefs: Array<{
+        filePath: string;
+        referencingSymbol?: string;
+        kind?: string;
+        line: number;
+        column: number;
+        context: string;
+      }> = [];
+
+      for (const relPath of filePaths) {
+        if (allRefs.length >= limit) break;
+        try {
+          const absolutePath = workspaces.resolvePath(workspace, relPath);
+          const fileContent = await readTextFile(absolutePath, "utf8");
+          const refs = findReferencesInFile(relPath, fileContent, name);
+          for (const r of refs) {
+            allRefs.push(r);
+            if (allRefs.length >= limit) break;
+          }
+        } catch {
+          // Skip unreadable files
+        }
+      }
+
+      const lines: string[] = [
+        `Found ${allRefs.length} reference(s) to '${name}':`,
+      ];
+      for (const r of allRefs) {
+        const symbolDesc = r.referencingSymbol ? ` in [${r.kind ?? "symbol"}] ${r.referencingSymbol}` : "";
+        lines.push(`- ${r.filePath}:L${r.line}:C${r.column}${symbolDesc}\n    ${r.context}`);
+      }
+
+      const text = lines.join("\n");
+      logToolCall(config, {
+        tool: toolNames.findReferencingSymbols,
+        workspaceId: workspace.id,
+        path: path ?? ".",
+        success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+        consoleUi: consoleToolUi(toolNames.findReferencingSymbols, {
+          workspaceId: workspace.id,
+          path: path ?? ".",
+          summary: { references: allRefs.length, query: name },
+        }),
+      });
+
+      return {
+        content: [textBlock(text)],
+        structuredContent: {
+          result: text,
+          references: allRefs,
         },
       };
     },
