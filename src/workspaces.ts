@@ -13,7 +13,7 @@ import type {
   WorkspaceResumeRecord,
   WorkspaceResumeState,
 } from "./workspace-memory.js";
-import { mkdir, opendir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdir, opendir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import type { ServerConfig } from "./config.js";
@@ -83,82 +83,6 @@ export interface OpenWorkspaceInput {
 
 export interface OpenWorkspaceOptions {
   conversationScopeId?: string;
-}
-
-function formatCheckpointMarkdown(record: {
-  id: string;
-  createdAt: string;
-  root: string;
-  state: WorkspaceResumeState;
-  facts: WorkspaceMemoryFacts;
-}): string {
-  const { id, createdAt, root, state, facts } = record;
-  const lines: string[] = [
-    "# WebMCP Checkpoint",
-    "",
-    `- **ID**: \`${id}\``,
-    `- **Time**: ${createdAt}`,
-    `- **Workspace**: \`${root}\``,
-    ...(facts.gitBranch ? [`- **Git Branch**: \`${facts.gitBranch}\``] : []),
-    ...(facts.gitHead ? [`- **Git Commit**: \`${facts.gitHead}\``] : []),
-    "",
-    "## 🎯 Goal",
-    state.goal,
-    "",
-    "## ⚡ Current Task",
-    state.currentTask,
-    "",
-  ];
-
-  if (state.completed && state.completed.length > 0) {
-    lines.push("## ✅ Completed");
-    for (const item of state.completed) {
-      lines.push(`- ${item}`);
-    }
-    lines.push("");
-  }
-
-  if (state.decisions && state.decisions.length > 0) {
-    lines.push("## 💡 Decisions & Rationale");
-    for (const item of state.decisions) {
-      lines.push(`- ${item}`);
-    }
-    lines.push("");
-  }
-
-  if (state.files && state.files.length > 0) {
-    lines.push("## 📁 Key Files");
-    for (const item of state.files) {
-      lines.push(`- \`${item}\``);
-    }
-    lines.push("");
-  }
-
-  if (state.verification && state.verification.length > 0) {
-    lines.push("## 🧪 Verification & Checks");
-    for (const item of state.verification) {
-      lines.push(`- ${item}`);
-    }
-    lines.push("");
-  }
-
-  if (state.blockers && state.blockers.length > 0) {
-    lines.push("## ⚠️ Blockers & Risks");
-    for (const item of state.blockers) {
-      lines.push(`- ${item}`);
-    }
-    lines.push("");
-  }
-
-  if (state.next && state.next.length > 0) {
-    lines.push("## 🚀 Next Steps");
-    for (const item of state.next) {
-      lines.push(`- ${item}`);
-    }
-    lines.push("");
-  }
-
-  return lines.join("\n");
 }
 
 type PathStats = Stats;
@@ -472,35 +396,13 @@ export class WorkspaceRegistry {
       sourceConversationId: input.sourceConversationId,
     });
 
-    // Auto export checkpoint as JSON and Markdown files
+    // Checkpoint records are persisted exclusively in WebMCP's internal SQLite database (this.store).
+    // Never write checkpoint files into the project workspace root to avoid polluting the user's git working tree.
     try {
-      const checkpointsDir = join(workspace.root, ".webmcp", "checkpoints");
-      await mkdir(checkpointsDir, { recursive: true });
-      const safeTime = record.createdAt.replace(/[:.]/g, "-");
-      const filenameBase = `${safeTime}_${record.id.slice(0, 8)}`;
-
-      const mdContent = formatCheckpointMarkdown({
-        id: record.id,
-        createdAt: record.createdAt,
-        root: workspace.root,
-        state: record.state,
-        facts: record.facts,
-      });
-
-      const jsonContent = JSON.stringify(record, null, 2);
-
-      // 1. History snapshot files in .webmcp/checkpoints/
-      await writeFile(join(checkpointsDir, `${filenameBase}.md`), mdContent, "utf8");
-      await writeFile(join(checkpointsDir, `${filenameBase}.json`), jsonContent, "utf8");
-
-      // 2. Latest checkpoint in .webmcp/
-      await writeFile(join(workspace.root, ".webmcp", "checkpoint.md"), mdContent, "utf8");
-      await writeFile(join(workspace.root, ".webmcp", "checkpoint.json"), jsonContent, "utf8");
-
-      // 3. Root CHECKPOINT.md for easy repo visibility
-      await writeFile(join(workspace.root, "CHECKPOINT.md"), mdContent, "utf8");
+      await rm(join(workspace.root, "CHECKPOINT.md"), { force: true });
+      await rm(join(workspace.root, ".webmcp"), { recursive: true, force: true });
     } catch {
-      // Ignore file export failure in restricted environments
+      // Ignore cleanup error in restricted environments
     }
 
     return record;
@@ -597,6 +499,9 @@ export class WorkspaceRegistry {
       managed: workspace.worktree?.managed,
     });
     this.workspaces.set(workspace.id, workspace);
+    // Asynchronously ensure any legacy checkpoint files in the project root are cleaned up
+    void rm(join(workspace.root, "CHECKPOINT.md"), { force: true }).catch(() => undefined);
+    void rm(join(workspace.root, ".webmcp"), { recursive: true, force: true }).catch(() => undefined);
     const agentsFiles = await this.loadInitialAgentsFiles(workspace.root);
     const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
 

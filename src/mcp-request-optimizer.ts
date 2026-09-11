@@ -149,30 +149,81 @@ export class McpRequestOptimizer {
   }
 }
 
+export interface WorkerSlotInfo {
+  id: number;
+  active: boolean;
+  requestId?: string;
+  tool?: string;
+  purpose?: string;
+  target?: string;
+  startedAt?: number;
+  method?: string;
+}
+
+export interface AcquireSlotParams {
+  requestId?: string;
+  tool?: string;
+  purpose?: string;
+  target?: string;
+  method?: string;
+}
+
 /**
  * Backpressure guard for expensive uncached MCP work. It protects the process
  * under load; it is intentionally not described as a throughput optimizer.
  */
 export class ConcurrentRequestLimiter {
-  private activeRequests = 0;
+  private slots: Map<number, WorkerSlotInfo> = new Map();
 
-  constructor(private readonly maxConcurrent = 6) {}
+  constructor(private readonly maxConcurrent = 20) {
+    for (let i = 1; i <= this.maxConcurrent; i++) {
+      this.slots.set(i, { id: i, active: false });
+    }
+  }
 
-  tryAcquire(): (() => void) | undefined {
-    if (this.activeRequests >= this.maxConcurrent) return undefined;
-    this.activeRequests += 1;
+  tryAcquire(params?: AcquireSlotParams): (() => void) | undefined {
+    let targetSlot: WorkerSlotInfo | undefined;
+    for (let i = 1; i <= this.maxConcurrent; i++) {
+      const slot = this.slots.get(i);
+      if (slot && !slot.active) {
+        targetSlot = slot;
+        break;
+      }
+    }
+    if (!targetSlot) return undefined;
+
+    const slotId = targetSlot.id;
+    this.slots.set(slotId, {
+      id: slotId,
+      active: true,
+      requestId: params?.requestId,
+      tool: params?.tool,
+      purpose: params?.purpose,
+      target: params?.target,
+      method: params?.method,
+      startedAt: Date.now(),
+    });
+
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      this.activeRequests -= 1;
+      this.slots.set(slotId, { id: slotId, active: false });
     };
   }
 
-  getStats(): { active: number; limit: number } {
+  getStats(): { active: number; limit: number; slots: WorkerSlotInfo[] } {
+    const slotsList: WorkerSlotInfo[] = [];
+    let activeCount = 0;
+    for (let i = 1; i <= this.maxConcurrent; i++) {
+      const slot = this.slots.get(i) ?? { id: i, active: false };
+      if (slot.active) activeCount += 1;
+      slotsList.push({ ...slot });
+    }
     return {
-      active: this.activeRequests,
+      active: activeCount,
       limit: this.maxConcurrent,
+      slots: slotsList,
     };
   }
 }

@@ -3749,7 +3749,27 @@ export function createServer(
   app.post("/mcp", async (req, res) => {
     const requestId = res.locals.requestId as string | undefined;
 
-    const releaseRequest = requestLimiter.tryAcquire();
+    const body = req.body as Record<string, unknown> | undefined;
+    const method = typeof body?.method === "string" ? body.method : undefined;
+    const params = body?.params as Record<string, unknown> | undefined;
+    const tool = typeof params?.name === "string" ? params.name : undefined;
+    const toolArgs = params?.arguments as Record<string, unknown> | undefined;
+    const purpose = typeof toolArgs?.purpose === "string" ? toolArgs.purpose : undefined;
+    const target = typeof toolArgs?.path === "string"
+      ? toolArgs.path
+      : typeof toolArgs?.command === "string"
+        ? (toolArgs.command.length > 50 ? toolArgs.command.slice(0, 47) + "..." : toolArgs.command)
+        : typeof toolArgs?.pattern === "string"
+          ? toolArgs.pattern
+          : undefined;
+
+    const releaseRequest = requestLimiter.tryAcquire({
+      requestId,
+      method,
+      tool,
+      purpose,
+      target,
+    });
     if (!releaseRequest) {
       logEvent(config.logging, "warn", "mcp_throttled", {
         requestId,

@@ -849,6 +849,275 @@ async fn stop_cloudflared_tunnel() -> Result<CloudflaredTunnelInfo, String> {
     })
 }
 
+fn extract_tunnel_token(input: &str) -> String {
+    let trimmed = input.trim();
+    for token in trimmed.split_whitespace() {
+        let clean = token.trim_matches(|c| c == '\'' || c == '"' || c == '`' || c == '<' || c == '>');
+        if clean.starts_with("eyJ") && clean.len() > 30 {
+            return clean.to_string();
+        }
+    }
+    let direct = trimmed.trim_matches(|c| c == '\'' || c == '"' || c == '`');
+    if direct.starts_with("eyJ") {
+        return direct.to_string();
+    }
+    trimmed.to_string()
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudflaredSystemServiceStatus {
+    installed: bool,
+    status: String,
+}
+
+#[tauri::command]
+async fn get_cloudflared_system_service_status() -> Result<CloudflaredSystemServiceStatus, String> {
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("sc");
+        cmd.arg("query").arg("Cloudflared");
+        cmd.creation_flags(0x08000000);
+        match cmd.output() {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if stdout.contains("RUNNING") {
+                    Ok(CloudflaredSystemServiceStatus {
+                        installed: true,
+                        status: "Running".to_string(),
+                    })
+                } else if stdout.contains("STOPPED") {
+                    Ok(CloudflaredSystemServiceStatus {
+                        installed: true,
+                        status: "Stopped".to_string(),
+                    })
+                } else if stdout.contains("PAUSED") {
+                    Ok(CloudflaredSystemServiceStatus {
+                        installed: true,
+                        status: "Paused".to_string(),
+                    })
+                } else if stdout.contains("START_PENDING") {
+                    Ok(CloudflaredSystemServiceStatus {
+                        installed: true,
+                        status: "Starting".to_string(),
+                    })
+                } else {
+                    Ok(CloudflaredSystemServiceStatus {
+                        installed: false,
+                        status: "NotInstalled".to_string(),
+                    })
+                }
+            }
+            Err(_) => Ok(CloudflaredSystemServiceStatus {
+                installed: false,
+                status: "Unknown".to_string(),
+            }),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(CloudflaredSystemServiceStatus {
+            installed: false,
+            status: "NotSupported".to_string(),
+        })
+    }
+}
+
+#[tauri::command]
+async fn install_cloudflared_system_service(token: String) -> Result<String, String> {
+    if !is_cloudflared_installed() {
+        return Err("未检测到 cloudflared CLI，请先点击「一键安装 cloudflared」".to_string());
+    }
+    let clean_token = extract_tunnel_token(&token);
+    if clean_token.is_empty() || !clean_token.starts_with("eyJ") {
+        return Err("未提取到有效的 Cloudflare 隧道 Token (Token 应以 eyJ 开头)".to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "Start-Process -FilePath 'cloudflared' -ArgumentList @('service', 'uninstall') -Verb runAs -Wait -ErrorAction SilentlyContinue; \
+             Start-Process -FilePath 'cloudflared' -ArgumentList @('service', 'install', '{}') -Verb runAs -Wait; \
+             Start-Process -FilePath 'net' -ArgumentList @('start', 'Cloudflared') -Verb runAs -Wait -ErrorAction SilentlyContinue",
+            clean_token
+        );
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        cmd.creation_flags(0x08000000);
+        let out = cmd.output().map_err(|e| format!("执行系统提权安装命令失败: {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("安装命令执行异常: {err}"));
+        }
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        let status = get_cloudflared_system_service_status().await?;
+        if status.status == "Running" {
+            Ok("✅ Cloudflare 隧道 Windows 系统服务已成功安装并启动（已配置开机自启）！".to_string())
+        } else {
+            Ok(format!("服务安装命令已执行完毕，当前状态: {}", status.status))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Err("系统服务自动安装目前仅支持 Windows 平台".to_string())
+    }
+}
+
+#[tauri::command]
+async fn uninstall_cloudflared_system_service() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let script = "Start-Process -FilePath 'cloudflared' -ArgumentList @('service', 'uninstall') -Verb runAs -Wait -ErrorAction SilentlyContinue";
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        cmd.creation_flags(0x08000000);
+        let _ = cmd.output();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        Ok("已请求卸载 Cloudflared 系统服务".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("仅支持 Windows 平台".to_string())
+    }
+}
+
+#[tauri::command]
+async fn control_cloudflared_system_service(action: String) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let act = match action.as_str() {
+            "start" => "start",
+            "stop" => "stop",
+            "restart" => "restart",
+            _ => return Err("Unsupported action".to_string()),
+        };
+        let script = if act == "restart" {
+            "Start-Process -FilePath 'net' -ArgumentList @('stop', 'Cloudflared') -Verb runAs -Wait -ErrorAction SilentlyContinue; Start-Process -FilePath 'net' -ArgumentList @('start', 'Cloudflared') -Verb runAs -Wait -ErrorAction SilentlyContinue".to_string()
+        } else {
+            format!("Start-Process -FilePath 'net' -ArgumentList @('{}', 'Cloudflared') -Verb runAs -Wait -ErrorAction SilentlyContinue", act)
+        };
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        cmd.creation_flags(0x08000000);
+        let _ = cmd.output();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let status = get_cloudflared_system_service_status().await?;
+        Ok(format!("操作已执行，当前服务状态: {}", status.status))
+    }
+    #[cfg(not(windows))]
+    {
+        Err("仅支持 Windows 平台".to_string())
+    }
+}
+
+#[tauri::command]
+async fn install_cloudflared_cli() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-Command",
+            "winget install --id Cloudflare.cloudflared -e --accept-source-agreements --accept-package-agreements --silent"
+        ]);
+        cmd.creation_flags(0x08000000);
+        let out = cmd.output().map_err(|e| format!("执行 winget 失败: {e}"))?;
+        if out.status.success() {
+            Ok("✅ cloudflared CLI 已通过 winget 成功安装！".to_string())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr);
+            Err(format!("通过 winget 安装失败: {err}，建议在终端尝试 `winget install Cloudflare.cloudflared` 或前往官网下载。"))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Err("请在终端运行包管理器安装 cloudflared (例如 brew install cloudflared)".to_string())
+    }
+}
+
+#[tauri::command]
+async fn start_cloudflared_named_tunnel(token: String) -> Result<CloudflaredTunnelInfo, String> {
+    if !is_cloudflared_installed() {
+        return Err("未检测到 cloudflared。请先安装 Cloudflare CLI。".to_string());
+    }
+
+    let clean_token = extract_tunnel_token(&token);
+    if clean_token.is_empty() || !clean_token.starts_with("eyJ") {
+        return Err("请输入有效的 Cloudflare 隧道 Token (以 eyJ 开头)".to_string());
+    }
+
+    let _ = stop_cloudflared_tunnel().await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut cmd = std::process::Command::new("cloudflared");
+    cmd.args(["tunnel", "run", "--token", &clean_token])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动 cloudflared 失败: {e}"))?;
+    let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+
+    let shared_logs = Arc::new(Mutex::new(Vec::<String>::new()));
+    let logs_clone = shared_logs.clone();
+
+    if let Some(stderr) = stderr {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(mut l) = logs_clone.lock() {
+                    if l.len() > 200 {
+                        l.remove(0);
+                    }
+                    l.push(line);
+                }
+            }
+        });
+    }
+
+    let logs_clone2 = shared_logs.clone();
+    if let Some(stdout) = stdout {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(mut l) = logs_clone2.lock() {
+                    if l.len() > 200 {
+                        l.remove(0);
+                    }
+                    l.push(line);
+                }
+            }
+        });
+    }
+
+    let pid = child.id();
+    {
+        let mut guard = MANAGED_TUNNEL.lock().map_err(|e| e.to_string())?;
+        *guard = Some(TunnelState {
+            child: Some(child),
+            url: None,
+            logs: Vec::new(),
+            error: None,
+        });
+    }
+
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    Ok(CloudflaredTunnelInfo {
+        installed: true,
+        running: true,
+        url: None,
+        pid: Some(pid),
+        logs: shared_logs.lock().map(|l| l.clone()).unwrap_or_default(),
+        error: None,
+    })
+}
+
 #[tauri::command]
 async fn proxy_webmcp_api(method: String, path: String, body: Option<Value>) -> Result<Value, String> {
     if !path.starts_with("/console/") && path != "/statusz" && path != "/statusz/optimizer" {
@@ -1110,6 +1379,7 @@ struct WebmcpConfigInfo {
     allowed_roots: Vec<String>,
     config_dir: Option<String>,
     tools_policy: ToolsPolicyInfo,
+    cloudflare_tunnel_token: Option<String>,
 }
 
 #[tauri::command]
@@ -1126,6 +1396,7 @@ async fn get_webmcp_config() -> Result<WebmcpConfigInfo, String> {
 
     let config_file = dir.join("config.json");
     let mut public_base_url = None;
+    let mut cloudflare_tunnel_token = None;
     let mut allowed_roots = Vec::new();
     let mut tools_policy = ToolsPolicyInfo::default();
 
@@ -1133,6 +1404,7 @@ async fn get_webmcp_config() -> Result<WebmcpConfigInfo, String> {
         if let Ok(content) = fs::read_to_string(&config_file) {
             if let Ok(v) = serde_json::from_str::<Value>(&content) {
                 public_base_url = v.get("publicBaseUrl").and_then(Value::as_str).map(str::to_owned);
+                cloudflare_tunnel_token = v.get("cloudflareTunnelToken").and_then(Value::as_str).map(str::to_owned);
                 if let Some(roots) = v.get("allowedRoots").and_then(Value::as_array) {
                     allowed_roots = roots.iter().filter_map(|r| r.as_str().map(str::to_owned)).collect();
                 }
@@ -1161,11 +1433,12 @@ async fn get_webmcp_config() -> Result<WebmcpConfigInfo, String> {
         allowed_roots,
         config_dir: Some(dir.to_string_lossy().to_string()),
         tools_policy,
+        cloudflare_tunnel_token,
     })
 }
 
 #[tauri::command]
-async fn set_webmcp_public_url(url: Option<String>) -> Result<WebmcpConfigInfo, String> {
+async fn set_webmcp_public_url(url: Option<String>, tunnel_token: Option<String>) -> Result<WebmcpConfigInfo, String> {
     let dir = if let Ok(Some(existing)) = active_config_dir() {
         existing
     } else {
@@ -1217,6 +1490,10 @@ async fn set_webmcp_public_url(url: Option<String>) -> Result<WebmcpConfigInfo, 
         config_val["publicBaseUrl"] = Value::Null;
     }
 
+    if let Some(tok) = tunnel_token.filter(|t| !t.trim().is_empty()) {
+        config_val["cloudflareTunnelToken"] = Value::String(extract_tunnel_token(&tok));
+    }
+
     let _ = fs::write(&config_file, serde_json::to_string_pretty(&config_val).unwrap_or_default());
 
     // Auto restart service if currently running so new URL/host immediately takes effect
@@ -1224,6 +1501,45 @@ async fn set_webmcp_public_url(url: Option<String>) -> Result<WebmcpConfigInfo, 
         let _ = restart_webmcp_service().await;
     }
 
+    get_webmcp_config().await
+}
+
+#[tauri::command]
+async fn save_cloudflare_tunnel_token(token: Option<String>) -> Result<WebmcpConfigInfo, String> {
+    let dir = if let Ok(Some(existing)) = active_config_dir() {
+        existing
+    } else {
+        let home = env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| "无法解析用户主目录".to_string())?;
+        let config_dir = home.join(".webmcp");
+        let _ = fs::create_dir_all(&config_dir);
+        config_dir
+    };
+
+    let config_file = dir.join("config.json");
+    let mut config_val: Value = if config_file.is_file() {
+        fs::read_to_string(&config_file)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({
+            "host": "127.0.0.1",
+            "port": 7676,
+            "artifactsEnabled": true
+        })
+    };
+
+    let clean = token.filter(|t| !t.trim().is_empty()).map(|t| extract_tunnel_token(&t));
+    if let Some(tok) = clean {
+        config_val["cloudflareTunnelToken"] = Value::String(tok);
+    } else {
+        config_val["cloudflareTunnelToken"] = Value::Null;
+    }
+
+    let _ = fs::write(&config_file, serde_json::to_string_pretty(&config_val).unwrap_or_default());
     get_webmcp_config().await
 }
 
@@ -1382,6 +1698,32 @@ async fn show_main_window(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_url_in_browser(url: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .spawn()
+            .map_err(|e| format!("打开浏览器失败: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("打开浏览器失败: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("打开浏览器失败: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn exit_app(app_handle: tauri::AppHandle, stop_service: bool) -> Result<(), String> {
     if stop_service {
         let _ = stop_webmcp_service().await;
@@ -1499,10 +1841,18 @@ pub fn run() {
             set_webmcp_public_url,
             save_webmcp_allowed_roots,
             save_webmcp_tools_policy,
+            save_cloudflare_tunnel_token,
+            get_cloudflared_system_service_status,
+            install_cloudflared_system_service,
+            uninstall_cloudflared_system_service,
+            control_cloudflared_system_service,
+            install_cloudflared_cli,
+            start_cloudflared_named_tunnel,
             select_folder_dialog,
             toggle_float_ball,
             is_float_ball_visible,
             show_main_window,
+            open_url_in_browser,
             exit_app
         ])
         .run(tauri::generate_context!())

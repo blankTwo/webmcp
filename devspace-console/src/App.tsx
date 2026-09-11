@@ -17,6 +17,8 @@ import {
   Database,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   FileCode2,
   FileSearch,
   FileText,
@@ -25,6 +27,7 @@ import {
   Globe,
   HardDrive,
   Info,
+  KeyRound,
   Loader2,
   Minus,
   Moon,
@@ -54,7 +57,7 @@ import type { AllowedRootInfo, LogEvent, LogKind, LogStatus, SkillItemInfo, Work
 
 type MainView = "logs" | "processes" | "optimizer" | "environment" | "skills" | "roots" | "settings";
 type Theme = "light" | "dark";
-type StatusFilter = "all" | "error" | "success" | "running";
+type StatusFilter = "all" | "error" | "success" | "running" | "terminal";
 
 interface ClientStatus {
   connected: boolean;
@@ -115,8 +118,23 @@ interface RuntimeStatus {
   agentDir: string;
 }
 
+export interface WorkerSlotInfo {
+  id: number;
+  active: boolean;
+  requestId?: string;
+  tool?: string;
+  purpose?: string;
+  target?: string;
+  startedAt?: number;
+  method?: string;
+}
+
 interface OptimizerStatus {
-  concurrent: { active: number; limit: number };
+  concurrent: {
+    active: number;
+    limit: number;
+    slots?: WorkerSlotInfo[];
+  };
   cache: { size: number; hits: number; misses: number; writes: number };
 }
 
@@ -1211,21 +1229,22 @@ function OptimizerTelemetryGraphic({
   const [history, setHistory] = useState<TelemetryHistoryPoint[]>([]);
   const [showRawJson, setShowRawJson] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!optimizer) return;
     const now = new Date();
     const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}`;
-    const hits = optimizer.cache.hits ?? 0;
-    const misses = optimizer.cache.misses ?? 0;
-    const total = hits + misses;
-    const hitRate = total > 0 ? Math.round((hits / total) * 100) : 0;
-    const active = optimizer.concurrent.active ?? 0;
-    const limit = optimizer.concurrent.limit ?? 6;
-    const size = optimizer.cache.size ?? 0;
+    const h = optimizer.cache.hits ?? 0;
+    const m = optimizer.cache.misses ?? 0;
+    const tot = h + m;
+    const hr = tot > 0 ? Math.round((h / tot) * 100) : 0;
+    const act = optimizer.concurrent.active ?? 0;
+    const lim = optimizer.concurrent.limit ?? 20;
+    const sz = optimizer.cache.size ?? 0;
 
     setHistory((prev) => {
-      const next = [...prev, { time: timeStr, active, limit, hitRate, hits, misses, size }];
+      const next = [...prev, { time: timeStr, active: act, limit: lim, hitRate: hr, hits: h, misses: m, size: sz }];
       return next.length > 20 ? next.slice(next.length - 20) : next;
     });
   }, [optimizer]);
@@ -1235,10 +1254,16 @@ function OptimizerTelemetryGraphic({
   const cacheHitTotal = hits + misses;
   const cacheHitRate = cacheHitTotal > 0 ? Math.round((hits / cacheHitTotal) * 100) : 0;
   const activeConcurrent = optimizer?.concurrent.active ?? 0;
-  const limitConcurrent = optimizer?.concurrent.limit ?? 6;
+  const limitConcurrent = optimizer?.concurrent.limit ?? 20;
   const concurrentUsage = limitConcurrent > 0 ? Math.round((activeConcurrent / limitConcurrent) * 100) : 0;
   const cacheSize = optimizer?.cache.size ?? 0;
   const cacheWrites = optimizer?.cache.writes ?? 0;
+
+  const slotsList: WorkerSlotInfo[] = optimizer?.concurrent.slots ?? Array.from({ length: limitConcurrent }, (_, i) => ({
+    id: i + 1,
+    active: i < activeConcurrent,
+  }));
+  const selectedSlot = slotsList.find((s) => s.id === selectedSlotId);
 
   // Circular gauge calculations (R=36, circumference ~ 226.19)
   const radius = 36;
@@ -1390,22 +1415,122 @@ function OptimizerTelemetryGraphic({
                 </div>
 
                 <div className="monitor-slots-col">
-                  <span style={{ fontSize: 11, color: "var(--monitor-muted)", fontWeight: 500 }}>
-                    处理线程 Worker 槽位分配:
-                  </span>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: "var(--monitor-muted)", fontWeight: 500 }}>
+                      处理线程 Worker 槽位分配 ({activeConcurrent}/{limitConcurrent}):
+                    </span>
+                    <span style={{ fontSize: 10.5, color: "var(--monitor-muted)" }}>
+                      点击槽位查看运行详情
+                    </span>
+                  </div>
                   <div className="monitor-slots-grid">
-                    {Array.from({ length: Math.max(limitConcurrent, 1) }).map((_, i) => {
-                      const isActive = i < activeConcurrent;
+                    {slotsList.map((slot) => {
+                      const isActive = slot.active;
+                      const isSelected = slot.id === selectedSlotId;
                       return (
-                        <div key={i} className={classNames("monitor-slot-box", isActive && "active")}>
-                          {isActive ? <Zap size={12} /> : <CircleDot size={12} />}
-                          <span>槽位 #{i + 1} {isActive ? "处理中" : "待命中"}</span>
+                        <div
+                          key={slot.id}
+                          className={classNames(
+                            "monitor-slot-box",
+                            isActive && "active",
+                            isSelected && "selected",
+                          )}
+                          onClick={() => setSelectedSlotId((prev) => (prev === slot.id ? null : slot.id))}
+                          title={isActive ? `槽位 #${slot.id}: 运行中 - ${slot.tool ?? slot.method ?? "执行中"}` : `槽位 #${slot.id}: 待命中`}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}>
+                            {isActive ? <Zap size={12} color="var(--monitor-blue)" /> : <CircleDot size={12} />}
+                            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              #{slot.id} {isActive ? "运行" : "空闲"}
+                            </span>
+                          </div>
+                          {isActive && slot.tool && (
+                            <span className="monitor-slot-pill" title={slot.tool}>
+                              {slot.tool}
+                            </span>
+                          )}
                         </div>
                       );
                     })}
                   </div>
                 </div>
               </div>
+
+              {selectedSlot && (
+                <div className="monitor-slot-detail-card">
+                  <div className="monitor-slot-detail-header">
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <Zap size={14} color={selectedSlot.active ? "var(--monitor-blue)" : "var(--monitor-muted)"} />
+                      <strong style={{ fontSize: 12.5, color: "var(--monitor-text)" }}>
+                        Worker 槽位 #{selectedSlot.id} 实时运行详情
+                      </strong>
+                      {selectedSlot.active ? (
+                        <span className="monitor-tag-badge" style={{ background: "var(--monitor-blue-soft)", color: "var(--monitor-blue)" }}>
+                          <Activity size={11} /> 正在处理请求
+                        </span>
+                      ) : (
+                        <span className="monitor-tag-badge workspace">
+                          <Check size={11} /> 待命中 (空闲就绪)
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      className="monitor-service-quick-btn monitor-btn-compact"
+                      style={{ padding: "2px 8px", fontSize: 11 }}
+                      onClick={() => setSelectedSlotId(null)}
+                    >
+                      关闭
+                    </button>
+                  </div>
+
+                  {selectedSlot.active ? (
+                    <div className="monitor-slot-detail-grid">
+                      <div className="monitor-slot-detail-item">
+                        <span>调用的 MCP 工具</span>
+                        <strong style={{ color: "var(--monitor-blue)" }}>
+                          {selectedSlot.tool ?? "未指定 / 内置方法"}
+                        </strong>
+                      </div>
+                      <div className="monitor-slot-detail-item">
+                        <span>RPC 方法</span>
+                        <strong>{selectedSlot.method ?? "tools/call"}</strong>
+                      </div>
+                      {selectedSlot.purpose && (
+                        <div className="monitor-slot-detail-item" style={{ gridColumn: "1 / -1" }}>
+                          <span>ChatGPT 执行意图 (Purpose)</span>
+                          <strong style={{ color: "var(--monitor-text)", background: "var(--monitor-panel-hover)", padding: "4px 8px", borderRadius: 4 }}>
+                            {selectedSlot.purpose}
+                          </strong>
+                        </div>
+                      )}
+                      {selectedSlot.target && (
+                        <div className="monitor-slot-detail-item" style={{ gridColumn: "1 / -1" }}>
+                          <span>操作目标 (文件路径 / 命令)</span>
+                          <code style={{ fontSize: 11.5, background: "var(--monitor-panel-hover)", padding: "3px 6px", borderRadius: 4 }}>
+                            {selectedSlot.target}
+                          </code>
+                        </div>
+                      )}
+                      <div className="monitor-slot-detail-item">
+                        <span>运行时长</span>
+                        <strong>
+                          {selectedSlot.startedAt ? `${Math.max(1, Math.round((Date.now() - selectedSlot.startedAt)))} ms` : "刚刚"}
+                        </strong>
+                      </div>
+                      <div className="monitor-slot-detail-item">
+                        <span>请求追踪 ID</span>
+                        <code style={{ fontSize: 10.5, color: "var(--monitor-muted)" }}>
+                          {selectedSlot.requestId ?? "—"}
+                        </code>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ padding: "6px 0", color: "var(--monitor-muted)", fontSize: 11.5 }}>
+                      当前槽位空闲，随时可并发处理 ChatGPT 发送的读写代码、搜索或终端指令。
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Card 2: Cache Efficiency & Breakdown */}
@@ -2053,11 +2178,20 @@ function App() {
   const [tunnelActionBusy, setTunnelActionBusy] = useState(false);
   const [tunnelFeedback, setTunnelFeedback] = useState<string | null>(null);
   const [showTunnelLogs, setShowTunnelLogs] = useState(false);
-  const [webmcpConfig, setWebmcpConfig] = useState<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; toolsPolicy?: ToolsPolicyInfo } | null>(null);
+  const [webmcpConfig, setWebmcpConfig] = useState<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; toolsPolicy?: ToolsPolicyInfo; cloudflareTunnelToken?: string | null } | null>(null);
   const [customDomainInput, setCustomDomainInput] = useState<string>("");
   const [domainSaving, setDomainSaving] = useState(false);
   const [domainFeedback, setDomainFeedback] = useState<string | null>(null);
   const [showDomainEditor, setShowDomainEditor] = useState(false);
+  const [showOwnerToken, setShowOwnerToken] = useState(false);
+  const [ownerTokenCopied, setOwnerTokenCopied] = useState(false);
+
+  // Cloudflare Named Tunnel & System Service fool-proof states
+  const [cloudflareTunnelTokenInput, setCloudflareTunnelTokenInput] = useState<string>("");
+  const [cfServiceStatus, setCfServiceStatus] = useState<{ installed: boolean; status: string } | null>(null);
+  const [cfServiceBusy, setCfServiceBusy] = useState<string | null>(null);
+  const [cfServiceFeedback, setCfServiceFeedback] = useState<string | null>(null);
+  const [cfCliInstalling, setCfCliInstalling] = useState(false);
 
   // Tools Execution Policy state
   const [toolsPolicyDraft, setToolsPolicyDraft] = useState<ToolsPolicyInfo>({
@@ -2162,8 +2296,12 @@ function App() {
 
   const updateTunnelStatus = useCallback(async () => {
     try {
-      const info = await invoke<CloudflaredTunnelInfo>("get_cloudflared_status");
+      const [info, srv] = await Promise.all([
+        invoke<CloudflaredTunnelInfo>("get_cloudflared_status"),
+        invoke<{ installed: boolean; status: string }>("get_cloudflared_system_service_status"),
+      ]);
       setTunnelInfo(info);
+      setCfServiceStatus(srv);
     } catch {
       // ignore
     }
@@ -2171,10 +2309,13 @@ function App() {
 
   const updateWebmcpConfig = useCallback(async () => {
     try {
-      const config = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; toolsPolicy?: ToolsPolicyInfo }>("get_webmcp_config");
+      const config = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; toolsPolicy?: ToolsPolicyInfo; cloudflareTunnelToken?: string | null }>("get_webmcp_config");
       setWebmcpConfig(config);
       if (config.publicBaseUrl) {
         setCustomDomainInput(config.publicBaseUrl);
+      }
+      if (config.cloudflareTunnelToken) {
+        setCloudflareTunnelTokenInput(config.cloudflareTunnelToken);
       }
       if (config.toolsPolicy) {
         setToolsPolicyDraft(config.toolsPolicy);
@@ -2189,7 +2330,7 @@ function App() {
     setToolsPolicyFeedback("正在保存 Tools 权限策略并同步重启服务…");
     try {
       const res = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; toolsPolicy?: ToolsPolicyInfo }>("save_webmcp_tools_policy", { policy: newPolicy });
-      setWebmcpConfig(res);
+      setWebmcpConfig((prev) => prev ? { ...prev, ...res } : (res as any));
       if (res.toolsPolicy) setToolsPolicyDraft(res.toolsPolicy);
       setToolsPolicyFeedback("✅ Tools 工具权限已生效并同步至 WebMCP 服务！");
       await refreshAll();
@@ -2206,16 +2347,131 @@ function App() {
     setDomainFeedback("正在保存公网域名配置并重启服务…");
     try {
       const targetUrl = urlToSave !== undefined ? urlToSave : (customDomainInput.trim() ? customDomainInput.trim() : null);
-      const res = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>("set_webmcp_public_url", { url: targetUrl });
-      setWebmcpConfig(res);
+      localStorage.removeItem("webmcp_previous_fixed_url");
+      const res = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null; cloudflareTunnelToken?: string | null }>(
+        "set_webmcp_public_url",
+        { url: targetUrl, tunnelToken: cloudflareTunnelTokenInput.trim() || null }
+      );
+      setWebmcpConfig((prev) => prev ? { ...prev, ...res } : (res as any));
       setDomainFeedback(targetUrl ? `固定公网域名已保存并生效: ${targetUrl}` : "已清除公网域名 (恢复本地 127.0.0.1 模式)");
-      setShowDomainEditor(false);
       await refreshAll();
     } catch (err) {
       setDomainFeedback(`保存域名失败: ${String(err)}`);
     } finally {
       setDomainSaving(false);
       setTimeout(() => setDomainFeedback(null), 5000);
+    }
+  };
+
+  const handlePasteTunnelToken = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setCloudflareTunnelTokenInput(text.trim());
+        setCfServiceFeedback("📋 已从剪贴板读取内容，系统将自动识别提取 Token！");
+        setTimeout(() => setCfServiceFeedback(null), 3000);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleInstallCloudflaredCli = async () => {
+    setCfCliInstalling(true);
+    setCfServiceFeedback("正在通过 winget 自动静默安装 cloudflared CLI 运行时…");
+    try {
+      const res = await invoke<string>("install_cloudflared_cli");
+      setCfServiceFeedback(res);
+      await updateTunnelStatus();
+    } catch (err) {
+      setCfServiceFeedback(`安装失败: ${String(err)}`);
+    } finally {
+      setCfCliInstalling(false);
+      setTimeout(() => setCfServiceFeedback(null), 8000);
+    }
+  };
+
+  const handleInstallSystemService = async () => {
+    if (!cloudflareTunnelTokenInput.trim()) {
+      setCfServiceFeedback("请先输入或粘贴 Cloudflare 隧道 Token 或完整安装命令！");
+      setTimeout(() => setCfServiceFeedback(null), 4000);
+      return;
+    }
+    setCfServiceBusy("installing");
+    setCfServiceFeedback("正在请求管理员权限安装并启动 Windows 系统服务（请在弹出的系统 UAC 授权窗口中点击「是」）…");
+    try {
+      if (customDomainInput.trim()) {
+        await invoke("set_webmcp_public_url", { url: customDomainInput.trim(), tunnelToken: cloudflareTunnelTokenInput.trim() });
+      } else {
+        await invoke("save_cloudflare_tunnel_token", { token: cloudflareTunnelTokenInput.trim() });
+      }
+      const res = await invoke<string>("install_cloudflared_system_service", { token: cloudflareTunnelTokenInput.trim() });
+      setCfServiceFeedback(res);
+      await updateTunnelStatus();
+      await updateWebmcpConfig();
+      await refreshAll();
+    } catch (err) {
+      setCfServiceFeedback(`安装系统服务失败: ${String(err)}`);
+    } finally {
+      setCfServiceBusy(null);
+      setTimeout(() => setCfServiceFeedback(null), 9000);
+    }
+  };
+
+  const handleStartNamedTunnel = async () => {
+    if (!cloudflareTunnelTokenInput.trim()) {
+      setCfServiceFeedback("请先输入或粘贴 Cloudflare 隧道 Token 或完整安装命令！");
+      setTimeout(() => setCfServiceFeedback(null), 4000);
+      return;
+    }
+    setCfServiceBusy("starting_named");
+    setCfServiceFeedback("正在以托管模式启动 Cloudflare 固定隧道（无需管理员权限）…");
+    try {
+      if (customDomainInput.trim()) {
+        await invoke("set_webmcp_public_url", { url: customDomainInput.trim(), tunnelToken: cloudflareTunnelTokenInput.trim() });
+      } else {
+        await invoke("save_cloudflare_tunnel_token", { token: cloudflareTunnelTokenInput.trim() });
+      }
+      const info = await invoke<CloudflaredTunnelInfo>("start_cloudflared_named_tunnel", { token: cloudflareTunnelTokenInput.trim() });
+      setTunnelInfo(info);
+      setCfServiceFeedback("✅ 固定域名托管隧道已启动并正常运行！");
+      await updateWebmcpConfig();
+      await refreshAll();
+    } catch (err) {
+      setCfServiceFeedback(`启动托管隧道失败: ${String(err)}`);
+    } finally {
+      setCfServiceBusy(null);
+      setTimeout(() => setCfServiceFeedback(null), 6000);
+    }
+  };
+
+  const handleControlSystemService = async (action: "start" | "stop" | "restart") => {
+    setCfServiceBusy(action);
+    setCfServiceFeedback(`正在执行服务 ${action === "start" ? "启动" : action === "stop" ? "停止" : "重启"}（请在 UAC 提权窗口确认）…`);
+    try {
+      const res = await invoke<string>("control_cloudflared_system_service", { action });
+      setCfServiceFeedback(res);
+      await updateTunnelStatus();
+    } catch (err) {
+      setCfServiceFeedback(`操作失败: ${String(err)}`);
+    } finally {
+      setCfServiceBusy(null);
+      setTimeout(() => setCfServiceFeedback(null), 5000);
+    }
+  };
+
+  const handleUninstallSystemService = async () => {
+    setCfServiceBusy("uninstalling");
+    setCfServiceFeedback("正在卸载 Cloudflared 系统服务（请在 UAC 提权窗口确认）…");
+    try {
+      const res = await invoke<string>("uninstall_cloudflared_system_service");
+      setCfServiceFeedback(res);
+      await updateTunnelStatus();
+    } catch (err) {
+      setCfServiceFeedback(`卸载失败: ${String(err)}`);
+    } finally {
+      setCfServiceBusy(null);
+      setTimeout(() => setCfServiceFeedback(null), 5000);
     }
   };
 
@@ -2390,7 +2646,22 @@ function App() {
       const info = await invoke<CloudflaredTunnelInfo>("start_cloudflared_tunnel");
       setTunnelInfo(info);
       if (info.url) {
-        setTunnelFeedback(`Cloudflare 临时域名已分配: ${info.url}`);
+        // Remember previous fixed domain if set and not already a temporary trycloudflare domain
+        if (webmcpConfig?.publicBaseUrl && !webmcpConfig.publicBaseUrl.includes("trycloudflare.com")) {
+          localStorage.setItem("webmcp_previous_fixed_url", webmcpConfig.publicBaseUrl);
+        }
+        // Auto-sync temporary URL to WebMCP server publicBaseUrl & allowedHosts
+        try {
+          const updated = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>(
+            "set_webmcp_public_url",
+            { url: info.url }
+          );
+          setWebmcpConfig((prev) => prev ? { ...prev, ...updated } : (updated as any));
+          setTunnelFeedback(`✅ 临时域名已分配并已自动同步至 MCP 服务: ${info.url}`);
+        } catch (syncErr) {
+          setTunnelFeedback(`Cloudflare 临时域名已分配: ${info.url} (同步配置失败: ${String(syncErr)})`);
+        }
+        await refreshAll();
       } else if (info.error) {
         setTunnelFeedback(info.error);
       }
@@ -2398,7 +2669,7 @@ function App() {
       setTunnelFeedback(`启动隧道失败: ${String(err)}`);
     } finally {
       setTunnelActionBusy(false);
-      setTimeout(() => setTunnelFeedback(null), 6000);
+      setTimeout(() => setTunnelFeedback(null), 7000);
     }
   };
 
@@ -2408,12 +2679,29 @@ function App() {
     try {
       const info = await invoke<CloudflaredTunnelInfo>("stop_cloudflared_tunnel");
       setTunnelInfo(info);
-      setTunnelFeedback("Cloudflare 临时公网隧道已安全关闭");
+      // Auto restore previous fixed domain if one was saved, or revert to local
+      const prevFixedUrl = localStorage.getItem("webmcp_previous_fixed_url");
+      try {
+        const updated = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>(
+          "set_webmcp_public_url",
+          { url: prevFixedUrl || null }
+        );
+        setWebmcpConfig((prev) => prev ? { ...prev, ...updated } : (updated as any));
+        if (prevFixedUrl) {
+          localStorage.removeItem("webmcp_previous_fixed_url");
+          setTunnelFeedback(`✅ 临时隧道已关闭，已自动恢复原有固定域名: ${prevFixedUrl}`);
+        } else {
+          setTunnelFeedback("✅ Cloudflare 临时公网隧道已安全关闭，已恢复本地模式");
+        }
+      } catch {
+        setTunnelFeedback("Cloudflare 临时公网隧道已安全关闭");
+      }
+      await refreshAll();
     } catch (err) {
       setTunnelFeedback(`停止隧道失败: ${String(err)}`);
     } finally {
       setTunnelActionBusy(false);
-      setTimeout(() => setTunnelFeedback(null), 4000);
+      setTimeout(() => setTunnelFeedback(null), 5000);
     }
   };
 
@@ -2424,13 +2712,23 @@ function App() {
       const info = await invoke<CloudflaredTunnelInfo>("start_cloudflared_tunnel");
       setTunnelInfo(info);
       if (info.url) {
-        setTunnelFeedback(`新临时域名已分配: ${info.url}`);
+        try {
+          const updated = await invoke<{ publicBaseUrl?: string | null; ownerToken?: string | null; allowedRoots: string[]; configDir?: string | null }>(
+            "set_webmcp_public_url",
+            { url: info.url }
+          );
+          setWebmcpConfig((prev) => prev ? { ...prev, ...updated } : (updated as any));
+          setTunnelFeedback(`✅ 新临时域名已分配并已自动同步至 MCP 服务: ${info.url}`);
+        } catch (syncErr) {
+          setTunnelFeedback(`新临时域名已分配: ${info.url}`);
+        }
+        await refreshAll();
       }
     } catch (err) {
       setTunnelFeedback(`重新获取失败: ${String(err)}`);
     } finally {
       setTunnelActionBusy(false);
-      setTimeout(() => setTunnelFeedback(null), 6000);
+      setTimeout(() => setTunnelFeedback(null), 7000);
     }
   };
 
@@ -2475,6 +2773,13 @@ function App() {
     await navigator.clipboard.writeText(mcpEndpoint);
     setMcpUrlCopied(true);
     setTimeout(() => setMcpUrlCopied(false), 1500);
+  };
+
+  const copyOwnerToken = async () => {
+    if (!webmcpConfig?.ownerToken) return;
+    await navigator.clipboard.writeText(webmcpConfig.ownerToken);
+    setOwnerTokenCopied(true);
+    setTimeout(() => setOwnerTokenCopied(false), 1500);
   };
 
   const addWorkspace = async (path: string) => {
@@ -2606,14 +2911,6 @@ function App() {
               <em>{workspaceEvents.length}</em>
             </button>
             <button
-              className={classNames("monitor-sidebar-nav-item", view === "processes" && "active")}
-              onClick={() => setView("processes")}
-            >
-              <TerminalSquare size={15} />
-              <span>运行终端</span>
-              <em>{processCount}</em>
-            </button>
-            <button
               className={classNames("monitor-sidebar-nav-item", view === "optimizer" && "active")}
               onClick={() => setView("optimizer")}
             >
@@ -2710,6 +3007,35 @@ function App() {
                 <span>重启</span>
               </button>
             </div>
+
+            {/* Owner Token / 密码 Card */}
+            {webmcpConfig?.ownerToken ? (
+              <div className="monitor-footer-token-card">
+                <div className="monitor-footer-token-header">
+                  <KeyRound size={11} color="var(--monitor-blue)" />
+                  <span>授权密码 (Owner Token)</span>
+                </div>
+                <div className="monitor-footer-token-row">
+                  <span className="monitor-footer-token-text mono" title={webmcpConfig.ownerToken}>
+                    {showOwnerToken ? webmcpConfig.ownerToken : "••••••••••••••••"}
+                  </span>
+                  <button
+                    className="monitor-footer-token-btn"
+                    onClick={() => setShowOwnerToken(!showOwnerToken)}
+                    title={showOwnerToken ? "隐藏密码" : "显示密码"}
+                  >
+                    {showOwnerToken ? <EyeOff size={11} /> : <Eye size={11} />}
+                  </button>
+                  <button
+                    className="monitor-footer-token-btn"
+                    onClick={() => void copyOwnerToken()}
+                    title="一键复制密码"
+                  >
+                    {ownerTokenCopied ? <Check size={11} color="var(--monitor-green)" /> : <Copy size={11} />}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </section>
         </aside>
 
@@ -2784,6 +3110,13 @@ function App() {
                     <CheckCircle2 size={12} />
                     成功
                   </button>
+                  <button
+                    className={classNames("monitor-filter-chip", statusFilter === "terminal" && "active")}
+                    onClick={() => setStatusFilter(statusFilter === "terminal" ? "all" : "terminal")}
+                  >
+                    <TerminalSquare size={12} />
+                    终端 {processCount > 0 ? `(${processCount})` : ""}
+                  </button>
                 </div>
 
                 <div className="monitor-search">
@@ -2801,7 +3134,10 @@ function App() {
                 </div>
               </section>
 
-              <section className="monitor-events">
+              {statusFilter === "terminal" ? (
+                workspace && <ProcessManager workspace={workspace} />
+              ) : (
+                <section className="monitor-events">
                 {!isServiceOnline && (
                   <div className="monitor-service-offline-banner">
                     <div>
@@ -2929,12 +3265,9 @@ function App() {
                   </div>
                 )}
               </section>
-            </>
-          )}
-
-          {view === "processes" && workspace && (
-            <ProcessManager workspace={workspace} />
-          )}
+            )}
+          </>
+        )}
 
           {view === "optimizer" && (
             <section className="monitor-overview-view">
@@ -3202,8 +3535,17 @@ function App() {
                     <button
                       className="service-action-btn"
                       style={{ marginLeft: "auto", padding: "3px 8px", fontSize: 11 }}
+                      onClick={() => void invoke("open_url_in_browser", { url: "https://one.dash.cloudflare.com/" })}
+                      title="在浏览器中打开 Cloudflare Zero Trust 控制台添加/管理固定域名隧道"
+                    >
+                      <ExternalLink size={12} />
+                      打开 Cloudflare 控制台
+                    </button>
+                    <button
+                      className="service-action-btn"
+                      style={{ padding: "3px 8px", fontSize: 11 }}
                       onClick={() => setShowDomainEditor(!showDomainEditor)}
-                      title="配置自定义固定公网域名 (如自有服务器反代域名)"
+                      title="配置自定义固定公网域名 (如自有服务器反代域名或 Cloudflare 固定域名)"
                     >
                       <Settings size={12} />
                       {showDomainEditor ? "收起域名设置" : (webmcpConfig?.publicBaseUrl ? "修改固定公网域名" : "配置固定公网域名")}
@@ -3227,30 +3569,233 @@ function App() {
                     </button>
                   </div>
 
-                  {showDomainEditor && (
-                    <div style={{ marginTop: 10, padding: 12, borderRadius: 8, background: "var(--monitor-panel)", border: "1px solid var(--monitor-line)" }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--monitor-text)" }}>
-                        🌐 配置固定公网 Base URL（支持自有反代域名）
+                  {webmcpConfig?.ownerToken && (
+                    <div className="monitor-endpoint-input-wrap" style={{ marginTop: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 8px", color: "var(--monitor-text-soft)", fontSize: 12 }}>
+                        <KeyRound size={13} color="var(--monitor-blue)" />
+                        <span style={{ fontWeight: 600, whiteSpace: "nowrap" }}>Owner 授权密码:</span>
                       </div>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input
+                        readOnly
+                        type={showOwnerToken ? "text" : "password"}
+                        className="monitor-endpoint-input"
+                        value={webmcpConfig.ownerToken}
+                        onClick={(e) => (e.target as HTMLInputElement).select()}
+                        title="WebMCP Owner 认证密码 (网页端添加或授权弹窗时使用)"
+                      />
+                      <button
+                        className="monitor-endpoint-copy-btn"
+                        style={{ borderRight: "1px solid var(--monitor-line)" }}
+                        onClick={() => setShowOwnerToken(!showOwnerToken)}
+                        title={showOwnerToken ? "隐藏密码" : "显示明文密码"}
+                      >
+                        {showOwnerToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                      <button
+                        className="monitor-endpoint-copy-btn"
+                        onClick={() => void copyOwnerToken()}
+                        title="复制 Owner 授权密码"
+                      >
+                        {ownerTokenCopied ? <Check size={14} color="var(--monitor-green)" /> : <Copy size={14} />}
+                        {ownerTokenCopied ? "已复制" : "复制密码"}
+                      </button>
+                    </div>
+                  )}
+
+                  {showDomainEditor && (
+                    <div style={{ marginTop: 12, padding: 14, borderRadius: 10, background: "var(--monitor-panel)", border: "1px solid var(--monitor-line)" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <ShieldCheck size={16} color="var(--monitor-blue)" />
+                          <strong style={{ fontSize: 13, color: "var(--monitor-text)" }}>
+                            Cloudflare 固定域名与隧道 (傻瓜式全自动托管)
+                          </strong>
+                        </div>
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "3px 9px", fontSize: 11 }}
+                          onClick={() => void invoke("open_url_in_browser", { url: "https://one.dash.cloudflare.com/" })}
+                        >
+                          <ExternalLink size={11} />
+                          打开 Cloudflare Zero Trust 控制台
+                        </button>
+                      </div>
+
+                      {/* Status row: cloudflared CLI & Windows System Service status */}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "8px 12px", background: "var(--monitor-panel-soft)", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ color: "var(--monitor-text-soft)" }}>cloudflared 运行时:</span>
+                          {tunnelInfo?.installed ? (
+                            <span style={{ color: "var(--monitor-green)", fontWeight: 600 }}>✅ 已安装就绪</span>
+                          ) : (
+                            <span style={{ color: "var(--monitor-red)", fontWeight: 600 }}>⚠️ 未安装</span>
+                          )}
+                          {!tunnelInfo?.installed && (
+                            <button
+                              className="service-action-btn start"
+                              style={{ padding: "2px 6px", fontSize: 10 }}
+                              disabled={cfCliInstalling}
+                              onClick={() => void handleInstallCloudflaredCli()}
+                            >
+                              <Zap size={11} />
+                              {cfCliInstalling ? "安装中…" : "一键安装运行时 (winget)"}
+                            </button>
+                          )}
+                        </div>
+
+                        <div style={{ width: 1, height: 16, background: "var(--monitor-line)" }} />
+
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ color: "var(--monitor-text-soft)" }}>Windows 系统服务:</span>
+                          {cfServiceStatus?.installed ? (
+                            cfServiceStatus.status === "Running" ? (
+                              <span style={{ color: "var(--monitor-green)", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--monitor-green)", display: "inline-block" }} />
+                                运行中 (开机自启)
+                              </span>
+                            ) : (
+                              <span style={{ color: "var(--monitor-amber)", fontWeight: 600 }}>
+                                已安装 (当前状态: {cfServiceStatus.status})
+                              </span>
+                            )
+                          ) : (
+                            <span style={{ color: "var(--monitor-text-soft)" }}>未安装为系统服务</span>
+                          )}
+                        </div>
+
+                        {cfServiceStatus?.installed && (
+                          <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+                            {cfServiceStatus.status === "Running" ? (
+                              <button
+                                className="service-action-btn stop"
+                                style={{ padding: "2px 6px", fontSize: 10 }}
+                                disabled={Boolean(cfServiceBusy)}
+                                onClick={() => void handleControlSystemService("stop")}
+                              >
+                                <Square size={10} /> 停止服务
+                              </button>
+                            ) : (
+                              <button
+                                className="service-action-btn start"
+                                style={{ padding: "2px 6px", fontSize: 10 }}
+                                disabled={Boolean(cfServiceBusy)}
+                                onClick={() => void handleControlSystemService("start")}
+                              >
+                                <Play size={10} /> 启动服务
+                              </button>
+                            )}
+                            <button
+                              className="service-action-btn"
+                              style={{ padding: "2px 6px", fontSize: 10 }}
+                              disabled={Boolean(cfServiceBusy)}
+                              onClick={() => void handleControlSystemService("restart")}
+                            >
+                              <RotateCw size={10} className={cfServiceBusy === "restart" ? "spinning" : ""} /> 重启服务
+                            </button>
+                            <button
+                              className="service-action-btn danger"
+                              style={{ padding: "2px 6px", fontSize: 10 }}
+                              disabled={Boolean(cfServiceBusy)}
+                              onClick={() => void handleUninstallSystemService()}
+                              title="卸载 Windows 系统服务"
+                            >
+                              <Trash2 size={10} /> 卸载服务
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Step 1: Tunnel Token */}
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--monitor-text)" }}>
+                            🔑 步骤 1：输入或粘贴 Cloudflare 隧道 Token（智能自动提取）
+                          </label>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {cloudflareTunnelTokenInput.includes("eyJ") && (
+                              <span style={{ fontSize: 11, color: "var(--monitor-green)", fontWeight: 600 }}>
+                                ✅ 已智能识别有效 Token
+                              </span>
+                            )}
+                            <button
+                              className="service-action-btn"
+                              style={{ padding: "2px 7px", fontSize: 11 }}
+                              onClick={() => void handlePasteTunnelToken()}
+                            >
+                              <Copy size={11} />
+                              粘贴剪贴板
+                            </button>
+                          </div>
+                        </div>
                         <input
                           type="text"
                           className="monitor-endpoint-input"
-                          style={{ flex: 1, padding: "6px 10px", fontSize: 13, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
-                          placeholder="例如: https://webmcp.do3bvk.cn"
+                          style={{ width: "100%", padding: "7px 10px", fontSize: 12, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
+                          placeholder="直接粘贴在 Cloudflare 网页中复制的命令（例如 cloudflared.exe service install eyJh...）或纯 Token"
+                          value={cloudflareTunnelTokenInput}
+                          onChange={(e) => setCloudflareTunnelTokenInput(e.target.value)}
+                        />
+                        <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 3 }}>
+                          💡 提示：在 Cloudflare Zero Trust 网页创建 Tunnel 后，直接复制其给出的整条命令或 Token 粘贴即可，系统会自动解析。
+                        </div>
+                      </div>
+
+                      {/* Step 2: Public Domain */}
+                      <div style={{ marginBottom: 12 }}>
+                        <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--monitor-text)", marginBottom: 4 }}>
+                          🌐 步骤 2：绑定的固定公网 Base URL（Public Hostname）
+                        </label>
+                        <input
+                          type="text"
+                          className="monitor-endpoint-input"
+                          style={{ width: "100%", padding: "7px 10px", fontSize: 12, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
+                          placeholder="例如: https://devspace.do3bvk.cn 或 https://webmcp.yourdomain.cn"
                           value={customDomainInput}
                           onChange={(e) => setCustomDomainInput(e.target.value)}
                         />
+                        <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 3 }}>
+                          💡 提示：需在 Cloudflare 控制台中将此域名的 Public Hostname 指向 <code>http://127.0.0.1:7676</code>。
+                        </div>
+                      </div>
+
+                      {/* Step 3: Action buttons */}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", paddingTop: 8, borderTop: "1px solid var(--monitor-line)" }}>
                         <button
                           className="service-action-btn start"
+                          style={{ padding: "6px 14px", fontSize: 12, fontWeight: 600 }}
+                          disabled={Boolean(cfServiceBusy)}
+                          onClick={() => void handleInstallSystemService()}
+                          title="自动提权运行 service install 并启动开机自启服务，同时保存公网域名配置"
+                        >
+                          <ShieldCheck size={14} />
+                          {cfServiceBusy === "installing" ? "正在自动提权安装中…" : "一键安装为系统服务（推荐・开机自启）"}
+                        </button>
+
+                        <button
+                          className="service-action-btn restart"
+                          style={{ padding: "6px 12px", fontSize: 12 }}
+                          disabled={Boolean(cfServiceBusy)}
+                          onClick={() => void handleStartNamedTunnel()}
+                          title="由 WebMCP 控制台随开随用，免管理员权限"
+                        >
+                          <Zap size={13} />
+                          {cfServiceBusy === "starting_named" ? "启动中…" : "免安装启动（托管模式・免提权）"}
+                        </button>
+
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "6px 10px", fontSize: 12, marginLeft: "auto" }}
                           disabled={domainSaving}
                           onClick={() => void handleSaveDomain()}
+                          title="仅保存公网域名到 config.json，不变更本地隧道"
                         >
-                          {domainSaving ? "保存中…" : "保存并生效"}
+                          {domainSaving ? "保存中…" : "仅保存域名配置"}
                         </button>
+
                         {webmcpConfig?.publicBaseUrl && (
                           <button
                             className="service-action-btn stop"
+                            style={{ padding: "6px 10px", fontSize: 12 }}
                             disabled={domainSaving}
                             onClick={() => void handleSaveDomain(null)}
                             title="清除已配置的公网域名"
@@ -3259,9 +3804,12 @@ function App() {
                           </button>
                         )}
                       </div>
-                      <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 6 }}>
-                        保存后将自动更新 <code>config.json</code> 中的 <code>publicBaseUrl</code> 与 <code>allowedHosts</code> 白名单并重启服务，无需命令行操作。
-                      </div>
+
+                      {cfServiceFeedback && (
+                        <div className="monitor-inline-error" style={{ background: "var(--monitor-panel-soft)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)", marginTop: 10 }}>
+                          {cfServiceFeedback}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -3623,14 +4171,6 @@ function App() {
               onCleanup={cleanup}
               onClear={clear}
             />
-          )}
-
-          {view === "processes" && !workspace && (
-            <div className="monitor-empty-state" style={{ height: "100%" }}>
-              <TerminalSquare size={36} />
-              <strong>暂无选中的工作区</strong>
-              <span>在左侧选择一个工作区以查看其托管的进程与终端。</span>
-            </div>
           )}
         </main>
       </div>
