@@ -1,15 +1,15 @@
 {
   "name": "webmcp-console",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.24",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node ../scripts/sync-version.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "node ../scripts/sync-version.mjs && tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

@@ -270,7 +270,7 @@ function serverInstructions(config: ServerConfig): string {
     : "";
   const gitAllowance = buildShellGitAllowance(config);
   const memoryInstruction = config.toolsPolicy.checkpoint
-    ? " When the user asks for a checkpoint or milestone save, or before switching tasks, you MUST call the checkpoint tool directly to persist progress and decisions into the workspace. Never claim that checkpoint is disabled; infer the goal and currentTask from the conversation if not explicitly provided. Use history_search when an older decision or checkpoint is needed."
+    ? " When the user asks for a checkpoint or milestone save, or before switching tasks, you MUST call the checkpoint tool directly to persist progress and decisions. Checkpoint records are persisted exclusively in WebMCP's internal SQLite database; do NOT create checkpoint files (such as CHECKPOINT.md) in the project workspace directory. Never claim that checkpoint is disabled; infer the goal and currentTask from the conversation if not explicitly provided. Use history_search when an older decision or checkpoint is needed."
     : " Checkpoint is currently disabled by user policy.";
 
   if (config.toolMode === "codex") {
@@ -1493,7 +1493,7 @@ server.registerTool(
     {
       title: "Save workspace checkpoint",
       description:
-        "Save a compact continuation checkpoint for this workspace after a meaningful milestone, before switching tasks, or when the user pauses work. Store project state and decisions, not the full conversation or secrets. A checkpoint updates the workspace resume state used by future ChatGPT conversations.",
+        "Save a compact continuation checkpoint for this workspace after a meaningful milestone, before switching tasks, or when the user pauses work. Store project state and decisions, not the full conversation or secrets. Checkpoint records are persisted exclusively in WebMCP's internal SQLite database without creating any files in the workspace directory. A checkpoint updates the workspace resume state used by future ChatGPT conversations.",
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         purpose: optionalPurposeSchema(),
@@ -1965,7 +1965,7 @@ server.registerTool(
     {
       title: "Edit file",
       description:
-        `Edit one file in a workspace by replacing text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file (supports \".*?\" non-greedy regex wildcards for robust pattern matching). Automatically normalizes CRLF/LF line endings and performs syntax validation on modification.`,
+        `Edit one file in a workspace by replacing text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique region of the original file. Supports '.*?' non-greedy regex wildcards for robust pattern matching across variable blocks. Automatically normalizes CRLF/LF line endings, tolerates minor whitespace and indentation differences, and performs syntax validation. For complex multi-file or multi-hunk changes, prefer ${toolNames.applyPatch}.`,
       inputSchema: {
         workspaceId: optionalWorkspaceIdSchema(),
         purpose: optionalPurposeSchema(),
@@ -1978,7 +1978,7 @@ server.registerTool(
               oldText: z
                 .string()
                 .describe(
-                  "Text or regex pattern to replace. Supports '.*?' non-greedy wildcards. Must match uniquely in the original file.",
+                  "Text or pattern to replace. Supports '.*?' non-greedy wildcards to bridge variable text. Tolerates indentation and whitespace differences. Must match a unique block in the file.",
                 ),
               newText: z.string().describe("Replacement text."),
             }),
@@ -2005,16 +2005,20 @@ server.registerTool(
       let finalContent: string | undefined;
 
       if (response.isError) {
-        // Smart fallback: handles CRLF/LF mismatch, non-greedy .*? regex wildcard, etc.
+        // Smart fallback: handles CRLF/LF mismatch, non-greedy .*? regex wildcard, fuzzy whitespace/indentation, etc.
         const smartResult = await applySmartEdit(absolutePath, input.edits);
         if (!smartResult.success) {
+          const errDetail = smartResult.error || toolErrorPreview(response.content) || `Failed to apply edit to ${input.path}`;
           logFailedToolResponse(config, {
             tool: toolNames.edit,
             workspaceId: workspace.id,
             path: input.path,
-          }, response.content, startedAt);
-          const bounded = boundedModelText(response.content, MODEL_ERROR_MAX_CHARACTERS);
-          return { ...response, content: [textBlock(bounded.text)] };
+          }, [textBlock(errDetail)], startedAt);
+          const bounded = truncateModelText(errDetail, MODEL_ERROR_MAX_CHARACTERS);
+          return {
+            isError: true,
+            content: [textBlock(bounded.text)],
+          };
         }
 
         finalPatch = smartResult.patch;
@@ -3528,6 +3532,34 @@ export function createServer(
     res.json({
       ok: true,
       ...consoleEvents.history({ workspaceRoot, before, limit }),
+    });
+  });
+
+  app.get("/console/export-events", (req, res) => {
+    const ownerToken = req.header("x-webmcp-owner-token");
+    if (!ownerTokenMatches(ownerToken, config.oauth.ownerToken)) {
+      res.status(401).json({ ok: false, error: "Unauthorized" });
+      return;
+    }
+
+    const requestedLimit = Number.parseInt(String(req.query.limit ?? "5000"), 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(requestedLimit, 20000))
+      : 5000;
+    const workspaceRoot = typeof req.query.workspaceRoot === "string" && req.query.workspaceRoot.trim()
+      ? req.query.workspaceRoot.trim()
+      : undefined;
+
+    const exported = consoleEvents.exportEvents({ workspaceRoot, limit });
+    const settings = consoleEvents.settings();
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      ok: true,
+      exportedAt: new Date().toISOString(),
+      databasePath: settings.databasePath,
+      totalStoredEvents: settings.storedEvents,
+      exportedCount: exported.events.length,
+      events: exported.events,
     });
   });
 

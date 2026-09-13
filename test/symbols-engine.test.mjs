@@ -127,6 +127,33 @@ assert(updatedOnDisk.includes("\r\n"), "CRLF line endings must be preserved");
 fs.unlinkSync(tmpFile);
 console.log("✓ applySmartEdit with CRLF and non-greedy regex wildcard passed!");
 
+// Test 8: applySmartEdit with fuzzy whitespace and indentation mismatch
+console.log("\nTest 8: Smart Edit with fuzzy whitespace and indentation tolerance");
+const tmpFile2 = path.join(os.tmpdir(), "smart_edit_fuzzy_" + Date.now() + ".html");
+const htmlContent = `
+<div class="card-container">
+    <div class="user-info">
+        <span class="username">Alice</span>
+        <span class="role">Admin</span>
+    </div>
+</div>
+`;
+fs.writeFileSync(tmpFile2, htmlContent, "utf8");
+
+// oldText has 2-space indentation instead of 4-space indentation
+const fuzzyResult = await applySmartEdit(tmpFile2, [
+  {
+    oldText: '  <div class="user-info">\n    <span class="username">Alice</span>\n    <span class="role">Admin</span>\n  </div>',
+    newText: '  <div class="user-info updated">\n    <span class="username">Alice V2</span>\n  </div>',
+  }
+]);
+
+assert.strictEqual(fuzzyResult.success, true, "Fuzzy whitespace edit should succeed");
+const updatedHtml = fs.readFileSync(tmpFile2, "utf8");
+assert(updatedHtml.includes("Alice V2"), "Updated HTML content must be on disk");
+fs.unlinkSync(tmpFile2);
+console.log("✓ applySmartEdit with fuzzy whitespace and indentation passed!");
+
 console.log("\n=================================================");
 console.log("🎉 ALL SEMANTIC ENGINE TESTS PASSED SUCCESSFULLY!");
 console.log("=================================================");

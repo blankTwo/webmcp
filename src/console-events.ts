@@ -327,6 +327,56 @@ export class ConsoleEventStore {
     };
   }
 
+  exportEvents(options: { workspaceRoot?: string; limit?: number } = {}): {
+    events: ConsoleToolEvent[];
+    total: number;
+  } {
+    const limit = Math.max(1, Math.min(options.limit ?? 5000, 20000));
+    if (!this.database) {
+      const filtered = options.workspaceRoot
+        ? []
+        : this.events.slice().reverse();
+      return {
+        events: filtered.slice(0, limit),
+        total: filtered.length,
+      };
+    }
+
+    const where: string[] = [];
+    const params: unknown[] = [];
+    let join = "";
+
+    if (options.workspaceRoot) {
+      join = "join workspace_sessions w on w.id = e.workspace_id";
+      where.push("w.root = ?");
+      params.push(options.workspaceRoot);
+    }
+
+    const whereSql = where.length > 0 ? `where ${where.join(" and ")}` : "";
+    const rows = this.database.sqlite.prepare(`
+      select e.id, e.timestamp, e.tool, e.purpose, e.action_kind, e.diff_stats_json, e.symbol_context_json, e.diagnostics_state, e.workspace_id, e.path, e.working_directory,
+             e.command_preview, e.command_length, e.success, e.duration_ms, e.error,
+             e.session_id, e.running, e.exit_code, e.output_preview, e.console_ui_json, e.favorite
+      from console_tool_events e
+      ${join}
+      ${whereSql}
+      order by e.timestamp desc, e.id desc
+      limit ?
+    `).all(...params, limit) as ConsoleEventRow[];
+
+    const totalRow = this.database.sqlite.prepare(`
+      select count(*) as count
+      from console_tool_events e
+      ${join}
+      ${whereSql}
+    `).get(...params) as { count: number };
+
+    return {
+      events: rows.map(rowToConsoleEvent),
+      total: totalRow.count,
+    };
+  }
+
   setFavorite(id: string, favorite: boolean): ConsoleToolEvent | undefined {
     if (!this.database) {
       const event = this.events.find((candidate) => candidate.id === id);

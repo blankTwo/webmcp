@@ -176,6 +176,28 @@ interface ProcessListResponse {
   processes: Array<{ running: boolean }>;
 }
 
+interface CloudflareLoginStatus {
+  loggedIn: boolean;
+  accountId?: string | null;
+  zoneId?: string | null;
+  hasApiToken: boolean;
+  certPath?: string | null;
+}
+
+interface CloudflareZoneItem {
+  id: string;
+  name: string;
+  status: string;
+}
+
+interface CloudflareAutoSetupResult {
+  ok: boolean;
+  domain: string;
+  fullEndpoint: string;
+  tunnelId: string;
+  message: string;
+}
+
 
 
 function formatUptime(seconds: number | undefined) {
@@ -613,6 +635,8 @@ function SettingsAndCheckpointsView({
   onSave,
   onCleanup,
   onClear,
+  onOpenSqlite,
+  onExportEvents,
 }: {
   workspace: WorkspaceItem | null;
   retentionDays: number;
@@ -623,6 +647,8 @@ function SettingsAndCheckpointsView({
   onSave: (days: number) => Promise<void>;
   onCleanup: () => Promise<void>;
   onClear: () => Promise<void>;
+  onOpenSqlite: () => Promise<void>;
+  onExportEvents: () => Promise<void>;
 }) {
   const [days, setDays] = useState(retentionDays);
   const [savedNotice, setSavedNotice] = useState(false);
@@ -898,6 +924,14 @@ function SettingsAndCheckpointsView({
           </div>
 
           <div className="monitor-maintenance-actions">
+            <button className="monitor-service-quick-btn primary" onClick={() => void onOpenSqlite()}>
+              <Database size={13} />
+              定位 SQLite 数据库文件
+            </button>
+            <button className="monitor-service-quick-btn" onClick={() => void onExportEvents()}>
+              <Download size={13} />
+              导出全部操作记录 (JSON)
+            </button>
             <button className="monitor-service-quick-btn" disabled={busy} onClick={() => void onCleanup()}>
               清理过期日志
             </button>
@@ -2174,6 +2208,7 @@ function App() {
   const serviceLogsEndRef = useRef<HTMLDivElement | null>(null);
 
   // Cloudflare Tunnel & Custom Public Domain management states
+  const [tunnelMode, setTunnelMode] = useState<"fixed" | "temp">("fixed");
   const [tunnelInfo, setTunnelInfo] = useState<CloudflaredTunnelInfo | null>(null);
   const [tunnelActionBusy, setTunnelActionBusy] = useState(false);
   const [tunnelFeedback, setTunnelFeedback] = useState<string | null>(null);
@@ -2192,6 +2227,18 @@ function App() {
   const [cfServiceBusy, setCfServiceBusy] = useState<string | null>(null);
   const [cfServiceFeedback, setCfServiceFeedback] = useState<string | null>(null);
   const [cfCliInstalling, setCfCliInstalling] = useState(false);
+
+  // Cloudflare Automated Wizard states (Browser Login + Automatic DNS/Tunnel setup)
+  const [cfLoginStatus, setCfLoginStatus] = useState<CloudflareLoginStatus | null>(null);
+  const [cfLoggingIn, setCfLoggingIn] = useState(false);
+  const [cfZones, setCfZones] = useState<CloudflareZoneItem[]>([]);
+  const [cfZonesLoading, setCfZonesLoading] = useState(false);
+  const [selectedZone, setSelectedZone] = useState<string>("");
+  const [subdomainInput, setSubdomainInput] = useState<string>("webmcp");
+  const [autoSetupMode, setAutoSetupMode] = useState<"service" | "managed">("managed");
+  const [autoSetupBusy, setAutoSetupBusy] = useState(false);
+  const [autoSetupFeedback, setAutoSetupFeedback] = useState<string | null>(null);
+  const [showManualZeroTrust, setShowManualZeroTrust] = useState(false);
 
   // Tools Execution Policy state
   const [toolsPolicyDraft, setToolsPolicyDraft] = useState<ToolsPolicyInfo>({
@@ -2278,6 +2325,83 @@ function App() {
     }
   };
 
+  const handleOpenLogsDir = async () => {
+    try {
+      await invoke("open_logs_directory");
+    } catch (err) {
+      setServiceFeedback(`打开日志目录失败: ${String(err)}`);
+      setTimeout(() => setServiceFeedback(null), 4000);
+    }
+  };
+
+  const handleOpenSqliteLocation = async () => {
+    try {
+      await invoke("open_sqlite_location", { path: databasePath || null });
+      setServiceFeedback(`已在系统资源管理器中定位 SQLite 数据库: ${databasePath || "webmcp.sqlite"}`);
+      setTimeout(() => setServiceFeedback(null), 4000);
+    } catch (err) {
+      setServiceFeedback(`定位 SQLite 数据库失败: ${String(err)}`);
+      setTimeout(() => setServiceFeedback(null), 4000);
+    }
+  };
+
+  const handleExportToolEvents = async () => {
+    try {
+      let exportData: any = null;
+      try {
+        const res = await consoleApi<{ ok: boolean; events: any[]; count?: number; databasePath?: string }>(
+          "GET",
+          withQuery("/console/export-events", { workspaceRoot: workspace?.path, limit: 5000 })
+        );
+        if (res && res.ok && Array.isArray(res.events)) {
+          exportData = res;
+        }
+      } catch {
+        // Fall back to memory events if server export endpoint is not reachable
+      }
+
+      if (!exportData) {
+        exportData = {
+          exportedAt: new Date().toISOString(),
+          workspace: workspace?.path || "all",
+          databasePath: databasePath || undefined,
+          totalStoredEvents: storedEvents,
+          exportedCount: events.length,
+          events: events,
+        };
+      }
+
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      const filename = `webmcp_operations_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      const blob = new Blob([jsonStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      await navigator.clipboard.writeText(jsonStr);
+      setServiceFeedback(`已成功导出 ${exportData.exportedCount || exportData.events?.length || 0} 条 MCP 操作遥测记录为 JSON 并复制到剪贴板！`);
+      setTimeout(() => setServiceFeedback(null), 5000);
+    } catch (err) {
+      setServiceFeedback(`导出 MCP 操作记录失败: ${String(err)}`);
+      setTimeout(() => setServiceFeedback(null), 4000);
+    }
+  };
+
+  const handleExportDiagnostic = async () => {
+    try {
+      const report = await invoke<string>("export_diagnostic_report");
+      await navigator.clipboard.writeText(report);
+      setServiceFeedback("📋 完整诊断日志已成功复制到剪贴板！可直接粘贴发送排查。");
+      setTimeout(() => setServiceFeedback(null), 5000);
+    } catch (err) {
+      setServiceFeedback(`导出诊断报告失败: ${String(err)}`);
+      setTimeout(() => setServiceFeedback(null), 4000);
+    }
+  };
+
   useEffect(() => {
     if (showServiceLogs || serviceActionBusy) {
       void updateServiceLogs();
@@ -2296,12 +2420,16 @@ function App() {
 
   const updateTunnelStatus = useCallback(async () => {
     try {
-      const [info, srv] = await Promise.all([
+      const [info, srv, cfLogin] = await Promise.all([
         invoke<CloudflaredTunnelInfo>("get_cloudflared_status"),
         invoke<{ installed: boolean; status: string }>("get_cloudflared_system_service_status"),
+        invoke<CloudflareLoginStatus>("get_cloudflare_login_status").catch(() => null),
       ]);
       setTunnelInfo(info);
       setCfServiceStatus(srv);
+      if (cfLogin) {
+        setCfLoginStatus(cfLogin);
+      }
     } catch {
       // ignore
     }
@@ -2313,9 +2441,15 @@ function App() {
       setWebmcpConfig(config);
       if (config.publicBaseUrl) {
         setCustomDomainInput(config.publicBaseUrl);
+        if (config.publicBaseUrl.includes("trycloudflare.com")) {
+          setTunnelMode("temp");
+        } else {
+          setTunnelMode("fixed");
+        }
       }
       if (config.cloudflareTunnelToken) {
         setCloudflareTunnelTokenInput(config.cloudflareTunnelToken);
+        setTunnelMode("fixed");
       }
       if (config.toolsPolicy) {
         setToolsPolicyDraft(config.toolsPolicy);
@@ -2391,6 +2525,90 @@ function App() {
     }
   };
 
+  const handleFetchZones = async () => {
+    setCfZonesLoading(true);
+    try {
+      const zones = await invoke<CloudflareZoneItem[]>("get_cloudflare_zones");
+      setCfZones(zones);
+      if (zones.length > 0 && !selectedZone) {
+        setSelectedZone(zones[0].name);
+      }
+      return zones;
+    } catch (err) {
+      console.error("Fetch zones failed:", err);
+      return [];
+    } finally {
+      setCfZonesLoading(false);
+    }
+  };
+
+  const handleStartBrowserLogin = async (force?: boolean) => {
+    setCfLoggingIn(true);
+    setCfServiceFeedback("🌐 正在唤起系统默认浏览器打开 Cloudflare 官方授权页，请在网页中点击「授权」...");
+    try {
+      const status = await invoke<CloudflareLoginStatus>("start_cloudflare_login", { force: Boolean(force) });
+      setCfLoginStatus(status);
+      if (status.loggedIn) {
+        setCfServiceFeedback("✅ Cloudflare 账号授权成功！正在读取您的可用域名列表...");
+        const zones = await handleFetchZones();
+        if (zones.length > 0) {
+          setCfServiceFeedback(`✅ 成功读取到 ${zones.length} 个可用主域名！请在下方输入二级前缀并点击启动。`);
+        } else {
+          setCfServiceFeedback("✅ 授权成功，但未在您的 Cloudflare 账号中检测到可用域名。");
+        }
+      }
+    } catch (err) {
+      setCfServiceFeedback(`授权失败: ${String(err)}`);
+    } finally {
+      setCfLoggingIn(false);
+      setTimeout(() => setCfServiceFeedback(null), 8000);
+    }
+  };
+
+  const handleRunAutoSetup = async () => {
+    if (!selectedZone) {
+      setAutoSetupFeedback("请先选择一个主域名（例如 do3bvk.cn）");
+      setTimeout(() => setAutoSetupFeedback(null), 4000);
+      return;
+    }
+    const cleanSub = subdomainInput.trim().replace(/^\.+|\.+$/g, "");
+    if (!cleanSub) {
+      setAutoSetupFeedback("请输入子域名前缀（例如 webmcp 或 liuyuan）");
+      setTimeout(() => setAutoSetupFeedback(null), 4000);
+      return;
+    }
+    const zoneItem = cfZones.find((z) => z.name === selectedZone);
+    if (!zoneItem) {
+      setAutoSetupFeedback("未找到选中的主域名信息，请重新选择");
+      setTimeout(() => setAutoSetupFeedback(null), 4000);
+      return;
+    }
+
+    setAutoSetupBusy(true);
+    setAutoSetupFeedback("正在执行全自动配置：创建隧道 ➔ 写入 DNS CNAME ➔ 映射端口 ➔ 启动服务...");
+    try {
+      const res = await invoke<CloudflareAutoSetupResult>("setup_cloudflare_auto_tunnel", {
+        zoneId: zoneItem.id,
+        zoneName: zoneItem.name,
+        subdomain: cleanSub,
+        mode: autoSetupMode,
+      });
+      setAutoSetupFeedback(`🎉 ${res.message} 完整公网地址: https://${res.domain}`);
+      await refreshAll();
+    } catch (err) {
+      setAutoSetupFeedback(`全自动配置失败: ${String(err)}`);
+    } finally {
+      setAutoSetupBusy(false);
+      setTimeout(() => setAutoSetupFeedback(null), 10000);
+    }
+  };
+
+  useEffect(() => {
+    if (cfLoginStatus?.loggedIn && cfZones.length === 0 && !cfZonesLoading) {
+      void handleFetchZones();
+    }
+  }, [cfLoginStatus?.loggedIn, cfZones.length, cfZonesLoading]);
+
   const handleInstallSystemService = async () => {
     if (!cloudflareTunnelTokenInput.trim()) {
       setCfServiceFeedback("请先输入或粘贴 Cloudflare 隧道 Token 或完整安装命令！");
@@ -2398,8 +2616,13 @@ function App() {
       return;
     }
     setCfServiceBusy("installing");
-    setCfServiceFeedback("正在请求管理员权限安装并启动 Windows 系统服务（请在弹出的系统 UAC 授权窗口中点击「是」）…");
+    setCfServiceFeedback("正在切换至固定域名并请求管理员权限安装 Windows 系统服务（请在弹出的系统 UAC 窗口中点击「是」）…");
     try {
+      // 1. If a temporary tunnel was running, terminate it first so there are no port/tunnel conflicts
+      if (tunnelInfo?.running) {
+        await invoke("stop_cloudflared_tunnel").catch(() => undefined);
+      }
+      localStorage.removeItem("webmcp_previous_fixed_url");
       if (customDomainInput.trim()) {
         await invoke("set_webmcp_public_url", { url: customDomainInput.trim(), tunnelToken: cloudflareTunnelTokenInput.trim() });
       } else {
@@ -2425,8 +2648,13 @@ function App() {
       return;
     }
     setCfServiceBusy("starting_named");
-    setCfServiceFeedback("正在以托管模式启动 Cloudflare 固定隧道（无需管理员权限）…");
+    setCfServiceFeedback("正在切换至固定域名并启动 Cloudflare 托管隧道（无需管理员权限）…");
     try {
+      // 1. If a temporary tunnel was running, terminate it first
+      if (tunnelInfo?.running) {
+        await invoke("stop_cloudflared_tunnel").catch(() => undefined);
+      }
+      localStorage.removeItem("webmcp_previous_fixed_url");
       if (customDomainInput.trim()) {
         await invoke("set_webmcp_public_url", { url: customDomainInput.trim(), tunnelToken: cloudflareTunnelTokenInput.trim() });
       } else {
@@ -2434,7 +2662,7 @@ function App() {
       }
       const info = await invoke<CloudflaredTunnelInfo>("start_cloudflared_named_tunnel", { token: cloudflareTunnelTokenInput.trim() });
       setTunnelInfo(info);
-      setCfServiceFeedback("✅ 固定域名托管隧道已启动并正常运行！");
+      setCfServiceFeedback("✅ 已成功切换至固定域名隧道！");
       await updateWebmcpConfig();
       await refreshAll();
     } catch (err) {
@@ -3086,6 +3314,31 @@ function App() {
             </div>
           </header>
 
+          {serviceFeedback && (
+            <div style={{
+              margin: "10px 24px 0",
+              padding: "9px 16px",
+              background: "var(--monitor-panel-soft)",
+              border: "1px solid var(--monitor-blue)",
+              borderRadius: "6px",
+              fontSize: "12px",
+              color: "var(--monitor-text)",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.2)"
+            }}>
+              <CheckCircle2 size={15} color="var(--monitor-green)" />
+              <span style={{ flex: 1 }}>{serviceFeedback}</span>
+              <button
+                style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--monitor-muted)", padding: 2 }}
+                onClick={() => setServiceFeedback(null)}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
           {view === "logs" && (
             <>
               <section className="monitor-log-toolbar">
@@ -3119,18 +3372,39 @@ function App() {
                   </button>
                 </div>
 
-                <div className="monitor-search">
-                  <Search size={14} />
-                  <input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="搜索工具、命令或执行结果..."
-                  />
-                  {query && (
-                    <button onClick={() => setQuery("")}>
-                      <X size={12} />
-                    </button>
-                  )}
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div className="monitor-search">
+                    <Search size={14} />
+                    <input
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder="搜索工具、命令或执行结果..."
+                    />
+                    {query && (
+                      <button onClick={() => setQuery("")}>
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+
+                  <button
+                    className="service-action-btn"
+                    style={{ padding: "4px 10px", fontSize: 12, display: "flex", alignItems: "center", gap: 5, height: 32, whiteSpace: "nowrap" }}
+                    onClick={() => void handleOpenSqliteLocation()}
+                    title={`在系统文件管理器中定位并高亮 SQLite 数据库 (${databasePath || "webmcp.sqlite"})`}
+                  >
+                    <Database size={13} color="var(--monitor-blue)" />
+                    <span>打开 SQLite</span>
+                  </button>
+                  <button
+                    className="service-action-btn"
+                    style={{ padding: "4px 10px", fontSize: 12, display: "flex", alignItems: "center", gap: 5, height: 32, whiteSpace: "nowrap" }}
+                    onClick={() => void handleExportToolEvents()}
+                    title="导出所有 MCP 工具调用与操作记录为 JSON 文件并复制到剪贴板"
+                  >
+                    <Download size={13} />
+                    <span>导出记录 (JSON)</span>
+                  </button>
                 </div>
               </section>
 
@@ -3400,7 +3674,25 @@ function App() {
                           {isServiceOnline ? "状态: 7676 端口运行中" : "状态: 服务已停止"}
                         </span>
                       </div>
-                      <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => void handleOpenLogsDir()}
+                          title="打开包含完整 server.log 的本地日志文件夹"
+                        >
+                          <Folder size={11} />
+                          打开目录
+                        </button>
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => void handleExportDiagnostic()}
+                          title="一键打包生成并复制完整诊断报告到剪贴板"
+                        >
+                          <Copy size={11} />
+                          复制诊断报告
+                        </button>
                         <button
                           className="service-action-btn"
                           style={{ padding: "2px 8px", fontSize: 11 }}
@@ -3457,68 +3749,538 @@ function App() {
 
               {/* Public Tunnel & Cloudflare Tunnel Status Card */}
               <div className="monitor-service-manager-card">
-                <div className="monitor-service-manager-header">
-                  <div className="monitor-service-manager-info">
-                    <span className={classNames("monitor-service-manager-icon", (tunnelInfo?.running || publicTunnelUrl) ? "online" : "")}>
-                      <Cloud size={22} />
-                    </span>
-                    <div className="monitor-service-manager-title">
-                      <strong>Cloudflare 临时公网隧道 (TryCloudflare)</strong>
-                      <span>
-                        {tunnelInfo?.running && tunnelInfo?.url
-                          ? `临时域名已就绪: ${tunnelInfo.url}`
-                          : tunnelInfo?.running
-                          ? "正在与 Cloudflare 边缘节点握手并分配临时域名…"
-                          : publicTunnelUrl
-                          ? `已配置公网隧道: ${publicTunnelUrl}`
-                          : "无需域名或账号，一键生成 Cloudflare 免费临时公网域名，直连 ChatGPT"}
-                      </span>
+                {/* Mode Selector Tabs */}
+                <div className="tunnel-mode-nav">
+                  <button
+                    className={classNames("tunnel-mode-tab", tunnelMode === "fixed" && "active")}
+                    onClick={() => setTunnelMode("fixed")}
+                  >
+                    <Globe size={15} />
+                    <span>固定公网域名隧道 (长久稳定・推荐)</span>
+                    {((cfServiceStatus?.installed && cfServiceStatus.status === "Running") || (tunnelInfo?.running && !tunnelInfo?.url)) && (
+                      <span className="tunnel-method-badge green" style={{ fontSize: 9, padding: "1px 5px" }}>运行中</span>
+                    )}
+                  </button>
+                  <button
+                    className={classNames("tunnel-mode-tab", tunnelMode === "temp" && "active")}
+                    onClick={() => setTunnelMode("temp")}
+                  >
+                    <Cloud size={15} />
+                    <span>TryCloudflare 临时隧道 (免配置・随开随用)</span>
+                    {tunnelInfo?.running && tunnelInfo?.url && (
+                      <span className="tunnel-method-badge amber" style={{ fontSize: 9, padding: "1px 5px" }}>运行中</span>
+                    )}
+                  </button>
+                </div>
+
+                {/* TAB 1: Fixed Domain Mode */}
+                {tunnelMode === "fixed" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    <div className="monitor-service-manager-header" style={{ alignItems: "flex-start" }}>
+                      <div className="monitor-service-manager-info">
+                        <span className={classNames("monitor-service-manager-icon", (cfServiceStatus?.status === "Running" || (tunnelInfo?.running && !tunnelInfo?.url)) ? "online" : "")}>
+                          <Globe size={22} />
+                        </span>
+                        <div className="monitor-service-manager-title">
+                          <strong>Cloudflare 固定域名专属隧道</strong>
+                          <span>
+                            {cfServiceStatus?.installed && cfServiceStatus.status === "Running"
+                              ? `🟢 Windows 系统服务运行中 (开机自启): ${webmcpConfig?.publicBaseUrl || "已连接"}`
+                              : tunnelInfo?.running && !tunnelInfo?.url
+                              ? `🟢 控制台免提权托管运行中: ${webmcpConfig?.publicBaseUrl || "已连接"}`
+                              : webmcpConfig?.publicBaseUrl && !webmcpConfig.publicBaseUrl.includes("trycloudflare.com")
+                              ? `已绑定固定域名: ${webmcpConfig.publicBaseUrl}`
+                              : "配置您自有的域名与 Cloudflare 隧道 Token，生成永不过期的固定 ChatGPT MCP 连接地址"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="monitor-service-control-buttons">
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "5px 10px", fontSize: 11 }}
+                          onClick={() => void invoke("open_url_in_browser", { url: "https://one.dash.cloudflare.com/" })}
+                        >
+                          <ExternalLink size={12} />
+                          打开 Cloudflare 控制台
+                        </button>
+                        <button
+                          className={classNames("service-action-btn", showTunnelLogs && "active")}
+                          onClick={() => setShowTunnelLogs(!showTunnelLogs)}
+                          title="展开/收起隧道实时日志"
+                        >
+                          <TerminalSquare size={13} />
+                          {showTunnelLogs ? "收起日志" : "隧道日志"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Fixed Domain Configuration Panel */}
+                    <div style={{ padding: 16, borderRadius: 10, background: "var(--monitor-panel-soft)", border: "1px solid var(--monitor-line)" }}>
+                      
+                      {/* === RECOMMENDATION: AUTOMATED WIZARD === */}
+                      <div className="auto-wizard-step">
+                        <div className="auto-wizard-step-title">
+                          <span>✨ 步骤 1：授权 Cloudflare 官方账号（如 codex-mcp 极速免密绑定）</span>
+                          {cfLoginStatus?.loggedIn ? (
+                            <span style={{ fontSize: 11, color: "var(--monitor-green)", fontWeight: 600 }}>
+                              ✅ 已绑定账号 (凭据就绪)
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: "var(--monitor-amber)" }}>
+                              ⚠️ 尚未授权
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="auto-wizard-auth-banner">
+                          <div style={{ fontSize: 12, color: "var(--monitor-text-soft)", lineHeight: 1.5 }}>
+                            {cfLoginStatus?.loggedIn ? (
+                              <div>
+                                本地已检测到有效的 Cloudflare 证书凭据。系统将自动解析您的域名并为您创建隧道与 DNS 解析。
+                              </div>
+                            ) : (
+                              <div>
+                                点击按钮将<strong>自动打开浏览器</strong>登录 Cloudflare 并授权域名，全自动生成专属证书，告别繁琐控制台配置！
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            className="auto-wizard-auth-btn"
+                            disabled={cfLoggingIn}
+                            onClick={() => void handleStartBrowserLogin(cfLoginStatus?.loggedIn ? true : false)}
+                          >
+                            <Sparkles size={14} />
+                            {cfLoggingIn ? "等待浏览器授权中…" : (cfLoginStatus?.loggedIn ? "重新登录换号" : "一键打开浏览器授权")}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Step 2: Choose Zone & Subdomain */}
+                      <div className="auto-wizard-step">
+                        <div className="auto-wizard-step-title">
+                          <span>🌐 步骤 2：选择主域名并设置子域名前缀</span>
+                          {cfZonesLoading && (
+                            <span style={{ fontSize: 11, color: "var(--monitor-blue)" }}>
+                              <Loader2 size={11} className="spinning" style={{ display: "inline", marginRight: 4 }} />
+                              正在同步域名...
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="auto-wizard-domain-grid">
+                          <div>
+                            <label style={{ display: "block", fontSize: 11, color: "var(--monitor-text-soft)", marginBottom: 4 }}>
+                              选择您的 Cloudflare 主域名 (Zone)
+                            </label>
+                            {cfZones.length > 0 ? (
+                              <select
+                                className="auto-wizard-select"
+                                value={selectedZone}
+                                onChange={(e) => setSelectedZone(e.target.value)}
+                              >
+                                {cfZones.map((z) => (
+                                  <option key={z.id} value={z.name}>
+                                    {z.name} ({z.status})
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <input
+                                  type="text"
+                                  className="monitor-endpoint-input"
+                                  style={{ flex: 1, padding: "7px 10px", fontSize: 12, background: "var(--monitor-bg)" }}
+                                  placeholder={cfLoginStatus?.loggedIn ? "点击右侧刷新获取域名" : "请先完成步骤 1 授权"}
+                                  value={selectedZone}
+                                  onChange={(e) => setSelectedZone(e.target.value)}
+                                />
+                                <button
+                                  className="service-action-btn"
+                                  style={{ padding: "4px 8px", fontSize: 11 }}
+                                  disabled={cfZonesLoading || !cfLoginStatus?.loggedIn}
+                                  onClick={() => void handleFetchZones()}
+                                >
+                                  <RefreshCw size={12} className={cfZonesLoading ? "spinning" : ""} />
+                                  拉取域名
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <label style={{ display: "block", fontSize: 11, color: "var(--monitor-text-soft)", marginBottom: 4 }}>
+                              自定义子域名前缀 (例如 webmcp)
+                            </label>
+                            <input
+                              type="text"
+                              className="monitor-endpoint-input"
+                              style={{ width: "100%", padding: "7px 10px", fontSize: 12, background: "var(--monitor-bg)" }}
+                              placeholder="例如 webmcp"
+                              value={subdomainInput}
+                              onChange={(e) => setSubdomainInput(e.target.value)}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Domain Preview */}
+                        <div className="auto-wizard-preview-card">
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <Globe size={14} color="var(--monitor-blue)" />
+                            <span style={{ color: "var(--monitor-text-soft)" }}>即将生成并绑定的固定完整公网地址:</span>
+                            <strong style={{ color: "var(--monitor-text)", fontFamily: "monospace" }}>
+                              https://{subdomainInput.trim() ? subdomainInput.trim() : "webmcp"}.{selectedZone || "yourdomain.com"}
+                            </strong>
+                          </div>
+                          <span className="tunnel-method-badge blue" style={{ fontSize: 9 }}>
+                            自动写入 Cloudflare DNS (已开启 CDN 加速)
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Step 3: Launch Mode & One-click Auto Deploy */}
+                      <div className="auto-wizard-step">
+                        <div className="auto-wizard-step-title">
+                          <span>⚡ 步骤 3：选择启动运行模式并一键自动化上线</span>
+                        </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+                          <div
+                            onClick={() => setAutoSetupMode("managed")}
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 8,
+                              cursor: "pointer",
+                              border: autoSetupMode === "managed" ? "2px solid var(--monitor-blue)" : "1px solid var(--monitor-line)",
+                              background: autoSetupMode === "managed" ? "rgba(59, 130, 246, 0.08)" : "var(--monitor-panel)",
+                              transition: "all 0.15s ease",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                              <strong style={{ fontSize: 12, color: "var(--monitor-text)" }}>随软件运行 (免管理员权限)</strong>
+                              <span className="tunnel-method-badge amber" style={{ fontSize: 9 }}>免提权</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", lineHeight: 1.4 }}>
+                              由本控制台在前台统一守护，随时开启关闭，关闭控制台即停止，适合调试和受限电脑。
+                            </div>
+                          </div>
+
+                          <div
+                            onClick={() => setAutoSetupMode("service")}
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 8,
+                              cursor: "pointer",
+                              border: autoSetupMode === "service" ? "2px solid var(--monitor-blue)" : "1px solid var(--monitor-line)",
+                              background: autoSetupMode === "service" ? "rgba(59, 130, 246, 0.08)" : "var(--monitor-panel)",
+                              transition: "all 0.15s ease",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                              <strong style={{ fontSize: 12, color: "var(--monitor-text)" }}>安装为系统服务 (开机自启)</strong>
+                              <span className="tunnel-method-badge blue" style={{ fontSize: 9 }}>推荐日常</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", lineHeight: 1.4 }}>
+                              注册为后台 Windows 服务，电脑开机无需打开控制台即可使用，ChatGPT 随时连通。
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* One Click Setup Action Button */}
+                        <button
+                          className="auto-wizard-launch-btn"
+                          disabled={autoSetupBusy || !cfLoginStatus?.loggedIn || !selectedZone}
+                          onClick={() => void handleRunAutoSetup()}
+                        >
+                          {autoSetupBusy ? (
+                            <>
+                              <Loader2 size={16} className="spinning" />
+                              <span>正在全自动配置隧道与 DNS 解析，请稍候…</span>
+                            </>
+                          ) : (
+                            <>
+                              <Zap size={16} />
+                              <span>一键全自动配置并上线专属固定域名 (推荐)</span>
+                            </>
+                          )}
+                        </button>
+
+                        {autoSetupFeedback && (
+                          <div className="monitor-inline-error" style={{ background: "var(--monitor-bg)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)", marginTop: 10 }}>
+                            {autoSetupFeedback}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Collapsible Advanced Manual Zero Trust Section */}
+                      <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--monitor-line)" }}>
+                        <div
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}
+                          onClick={() => setShowManualZeroTrust(!showManualZeroTrust)}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: "var(--monitor-text-soft)" }}>
+                            {showManualZeroTrust ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                            <span>高级选项：手动粘贴 Cloudflare 隧道 Token 与 Hostname（传统企业模式）</span>
+                          </div>
+                          <span style={{ fontSize: 11, color: "var(--monitor-muted)" }}>
+                            {showManualZeroTrust ? "点击收起" : "点击展开"}
+                          </span>
+                        </div>
+
+                        {showManualZeroTrust && (
+                          <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: "var(--monitor-panel)", border: "1px solid var(--monitor-line)" }}>
+                            {/* Manual Step 1: Token Input */}
+                            <div style={{ marginBottom: 12 }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                                <label style={{ fontSize: 12, fontWeight: 600, color: "var(--monitor-text)" }}>
+                                  输入或粘贴 Cloudflare 隧道 Token
+                                </label>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  {cloudflareTunnelTokenInput.includes("eyJ") && (
+                                    <span style={{ fontSize: 11, color: "var(--monitor-green)", fontWeight: 600 }}>
+                                      ✅ 已识别有效 Token
+                                    </span>
+                                  )}
+                                  <button
+                                    className="service-action-btn"
+                                    style={{ padding: "2px 7px", fontSize: 11 }}
+                                    onClick={() => void handlePasteTunnelToken()}
+                                  >
+                                    <Copy size={11} />
+                                    粘贴剪贴板
+                                  </button>
+                                </div>
+                              </div>
+                              <input
+                                type="text"
+                                className="monitor-endpoint-input"
+                                style={{ width: "100%", padding: "7px 10px", fontSize: 12, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
+                                placeholder="直接粘贴 Cloudflare 网页上给出的整条安装命令或纯 Token"
+                                value={cloudflareTunnelTokenInput}
+                                onChange={(e) => setCloudflareTunnelTokenInput(e.target.value)}
+                              />
+                            </div>
+
+                            {/* Manual Step 2: Domain Input */}
+                            <div style={{ marginBottom: 14 }}>
+                              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--monitor-text)", marginBottom: 4 }}>
+                                绑定的固定公网 Base URL (例如 https://devspace.do3bvk.cn)
+                              </label>
+                              <input
+                                type="text"
+                                className="monitor-endpoint-input"
+                                style={{ width: "100%", padding: "7px 10px", fontSize: 12, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
+                                placeholder="例如: https://devspace.do3bvk.cn"
+                                value={customDomainInput}
+                                onChange={(e) => setCustomDomainInput(e.target.value)}
+                              />
+                            </div>
+
+                            {/* Manual Step 3: Run Options */}
+                            <div className="tunnel-method-grid">
+                              <div className={classNames("tunnel-method-card", "recommended")}>
+                                <div>
+                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                                    <strong style={{ fontSize: 12, color: "var(--monitor-text)" }}>后台系统服务</strong>
+                                    <span className="tunnel-method-badge blue">开机自启</span>
+                                  </div>
+                                  <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginBottom: 8 }}>
+                                    通过 Token 一键安装注册为 Windows 后台系统服务。
+                                  </div>
+                                </div>
+                                <div style={{ paddingTop: 8, borderTop: "1px solid var(--monitor-line)" }}>
+                                  {cfServiceStatus?.installed ? (
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                                      <span style={{ fontSize: 11, color: cfServiceStatus.status === "Running" ? "var(--monitor-green)" : "var(--monitor-amber)", fontWeight: 600 }}>
+                                        {cfServiceStatus.status === "Running" ? "✅ 运行中" : `⚠️ ${cfServiceStatus.status}`}
+                                      </span>
+                                      <div style={{ display: "flex", gap: 5 }}>
+                                        {cfServiceStatus.status === "Running" ? (
+                                          <button
+                                            className="service-action-btn stop"
+                                            style={{ padding: "3px 6px", fontSize: 11 }}
+                                            disabled={Boolean(cfServiceBusy)}
+                                            onClick={() => void handleControlSystemService("stop")}
+                                          >
+                                            <Square size={10} /> 停止
+                                          </button>
+                                        ) : (
+                                          <button
+                                            className="service-action-btn start"
+                                            style={{ padding: "3px 6px", fontSize: 11 }}
+                                            disabled={Boolean(cfServiceBusy)}
+                                            onClick={() => void handleControlSystemService("start")}
+                                          >
+                                            <Play size={10} /> 启动
+                                          </button>
+                                        )}
+                                        <button
+                                          className="service-action-btn danger"
+                                          style={{ padding: "3px 6px", fontSize: 11 }}
+                                          disabled={Boolean(cfServiceBusy)}
+                                          onClick={() => void handleUninstallSystemService()}
+                                        >
+                                          <Trash2 size={10} /> 卸载
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      className="service-action-btn start"
+                                      style={{ width: "100%", justifyContent: "center", padding: "5px 10px", fontSize: 11 }}
+                                      disabled={Boolean(cfServiceBusy)}
+                                      onClick={() => void handleInstallSystemService()}
+                                    >
+                                      <ShieldCheck size={13} />
+                                      {cfServiceBusy === "installing" ? "提权安装中…" : "安装系统服务"}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="tunnel-method-card">
+                                <div>
+                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                                    <strong style={{ fontSize: 12, color: "var(--monitor-text)" }}>免提权直接启动</strong>
+                                    <span className="tunnel-method-badge amber">随软件运行</span>
+                                  </div>
+                                  <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginBottom: 8 }}>
+                                    前台随本软件启动与停止，无需管理员权限。
+                                  </div>
+                                </div>
+                                <div style={{ paddingTop: 8, borderTop: "1px solid var(--monitor-line)" }}>
+                                  {tunnelInfo?.running && !tunnelInfo?.url ? (
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                                      <span style={{ fontSize: 11, color: "var(--monitor-green)", fontWeight: 600 }}>
+                                        ✅ 托管隧道运行中
+                                      </span>
+                                      <button
+                                        className="service-action-btn stop"
+                                        style={{ padding: "3px 6px", fontSize: 11 }}
+                                        disabled={Boolean(cfServiceBusy) || tunnelActionBusy}
+                                        onClick={() => void handleStopTunnel()}
+                                      >
+                                        <Square size={10} /> 停止
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      className="service-action-btn restart"
+                                      style={{ width: "100%", justifyContent: "center", padding: "5px 10px", fontSize: 11 }}
+                                      disabled={Boolean(cfServiceBusy) || tunnelActionBusy}
+                                      onClick={() => void handleStartNamedTunnel()}
+                                    >
+                                      <Zap size={13} />
+                                      {cfServiceBusy === "starting_named" ? "启动中…" : "启动托管隧道"}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 10, paddingTop: 6, borderTop: "1px solid var(--monitor-line)" }}>
+                              <button
+                                className="service-action-btn"
+                                style={{ padding: "3px 8px", fontSize: 11 }}
+                                disabled={domainSaving}
+                                onClick={() => void handleSaveDomain()}
+                              >
+                                {domainSaving ? "保存中…" : "仅保存域名配置"}
+                              </button>
+                              {webmcpConfig?.publicBaseUrl && !webmcpConfig.publicBaseUrl.includes("trycloudflare.com") && (
+                                <button
+                                  className="service-action-btn stop"
+                                  style={{ padding: "3px 8px", fontSize: 11 }}
+                                  disabled={domainSaving}
+                                  onClick={() => void handleSaveDomain(null)}
+                                >
+                                  清除固定域名
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {cfServiceFeedback && (
+                        <div className="monitor-inline-error" style={{ background: "var(--monitor-bg)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)", marginTop: 10 }}>
+                          {cfServiceFeedback}
+                        </div>
+                      )}
                     </div>
                   </div>
+                )}
 
-                  <div className="monitor-service-control-buttons">
-                    {!tunnelInfo?.running ? (
-                      <button
-                        className="service-action-btn start"
-                        disabled={tunnelActionBusy}
-                        onClick={() => void handleStartTunnel()}
-                        title="一键启动 Cloudflare TryCloudflare 免费临时隧道"
-                      >
-                        <Play size={14} />
-                        {tunnelActionBusy ? "初始化中…" : "一键启动临时隧道"}
-                      </button>
-                    ) : (
-                      <>
+                {/* TAB 2: Temporary TryCloudflare Mode */}
+                {tunnelMode === "temp" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    <div className="monitor-service-manager-header">
+                      <div className="monitor-service-manager-info">
+                        <span className={classNames("monitor-service-manager-icon", (tunnelInfo?.running && tunnelInfo?.url) ? "online" : "")}>
+                          <Cloud size={22} />
+                        </span>
+                        <div className="monitor-service-manager-title">
+                          <strong>Cloudflare 临时免费公网隧道 (TryCloudflare)</strong>
+                          <span>
+                            {tunnelInfo?.running && tunnelInfo?.url
+                              ? `临时域名已就绪: ${tunnelInfo.url}`
+                              : tunnelInfo?.running
+                              ? "正在与 Cloudflare 边缘节点握手并分配临时域名…"
+                              : "无需拥有域名或 Cloudflare 账号，点击即可一键分配随机免费公网域名直连 ChatGPT"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="monitor-service-control-buttons">
+                        {!tunnelInfo?.running ? (
+                          <button
+                            className="service-action-btn start"
+                            disabled={tunnelActionBusy}
+                            onClick={() => void handleStartTunnel()}
+                            title="一键启动 Cloudflare TryCloudflare 免费临时隧道"
+                          >
+                            <Play size={14} />
+                            {tunnelActionBusy ? "初始化中…" : "一键启动临时隧道"}
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              className="service-action-btn restart"
+                              disabled={tunnelActionBusy}
+                              onClick={() => void handleRestartTunnel()}
+                              title="重新向 Cloudflare 申请新的临时域名"
+                            >
+                              <RotateCw size={14} className={tunnelActionBusy ? "spinning" : ""} />
+                              {tunnelActionBusy ? "申请中…" : "更换临时域名"}
+                            </button>
+                            <button
+                              className="service-action-btn stop"
+                              disabled={tunnelActionBusy}
+                              onClick={() => void handleStopTunnel()}
+                              title="停止 Cloudflare 临时隧道"
+                            >
+                              <Square size={13} />
+                              停止临时隧道
+                            </button>
+                          </>
+                        )}
                         <button
-                          className="service-action-btn restart"
-                          disabled={tunnelActionBusy}
-                          onClick={() => void handleRestartTunnel()}
-                          title="重新向 Cloudflare 申请新的临时域名"
+                          className={classNames("service-action-btn", showTunnelLogs && "active")}
+                          onClick={() => setShowTunnelLogs(!showTunnelLogs)}
+                          title="展开/收起隧道实时日志"
                         >
-                          <RotateCw size={14} className={tunnelActionBusy ? "spinning" : ""} />
-                          {tunnelActionBusy ? "申请中…" : "更换临时域名"}
+                          <TerminalSquare size={13} />
+                          {showTunnelLogs ? "收起日志" : "隧道日志"}
                         </button>
-                        <button
-                          className="service-action-btn stop"
-                          disabled={tunnelActionBusy}
-                          onClick={() => void handleStopTunnel()}
-                          title="停止 Cloudflare 临时隧道"
-                        >
-                          <Square size={13} />
-                          停止隧道
-                        </button>
-                      </>
-                    )}
-                    <button
-                      className={classNames("service-action-btn", showTunnelLogs && "active")}
-                      onClick={() => setShowTunnelLogs(!showTunnelLogs)}
-                      title="展开/收起隧道实时日志"
-                    >
-                      <TerminalSquare size={13} />
-                      {showTunnelLogs ? "收起日志" : "隧道日志"}
-                    </button>
+                      </div>
+                    </div>
+
+                    <div style={{ padding: 12, borderRadius: 8, background: "var(--monitor-panel-soft)", border: "1px solid var(--monitor-line)", fontSize: 12, color: "var(--monitor-text-soft)", lineHeight: 1.6 }}>
+                      ℹ️ <strong>临时隧道说明：</strong>
+                      由 Cloudflare 官方免费提供的 <code>*.trycloudflare.com</code> 临时公网地址。特点是完全无需登录或配置域名，随开随用；缺点是每次启动生成的域名都是随机的，且有会话时长限制。如需长久固定域名，请切换至上方的<strong>「固定公网域名隧道」</strong>。
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {tunnelFeedback && (
                   <div className="monitor-inline-error" style={{ background: "var(--monitor-panel-soft)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)" }}>
@@ -3531,25 +4293,13 @@ function App() {
                   <div className="monitor-endpoint-label">
                     <Globe size={15} color="var(--monitor-blue)" />
                     <strong>ChatGPT MCP 连接端点 (Endpoint URL)</strong>
-                    <span className="monitor-endpoint-tag">{publicTunnelUrl ? (tunnelInfo?.url ? "TryCloudflare 临时域名" : "自定义公网域名") : "本地模式"}</span>
-                    <button
-                      className="service-action-btn"
-                      style={{ marginLeft: "auto", padding: "3px 8px", fontSize: 11 }}
-                      onClick={() => void invoke("open_url_in_browser", { url: "https://one.dash.cloudflare.com/" })}
-                      title="在浏览器中打开 Cloudflare Zero Trust 控制台添加/管理固定域名隧道"
-                    >
-                      <ExternalLink size={12} />
-                      打开 Cloudflare 控制台
-                    </button>
-                    <button
-                      className="service-action-btn"
-                      style={{ padding: "3px 8px", fontSize: 11 }}
-                      onClick={() => setShowDomainEditor(!showDomainEditor)}
-                      title="配置自定义固定公网域名 (如自有服务器反代域名或 Cloudflare 固定域名)"
-                    >
-                      <Settings size={12} />
-                      {showDomainEditor ? "收起域名设置" : (webmcpConfig?.publicBaseUrl ? "修改固定公网域名" : "配置固定公网域名")}
-                    </button>
+                    <span className="monitor-endpoint-tag">
+                      {publicTunnelUrl
+                        ? (tunnelInfo?.url
+                          ? "TryCloudflare 临时免费域名"
+                          : (cfServiceStatus?.status === "Running" ? "固定域名 (系统服务后台中)" : "固定域名 (控制台前台托管)"))
+                        : "本地离线模式 (127.0.0.1)"}
+                    </span>
                   </div>
                   <div className="monitor-endpoint-input-wrap">
                     <input
@@ -3602,217 +4352,6 @@ function App() {
                     </div>
                   )}
 
-                  {showDomainEditor && (
-                    <div style={{ marginTop: 12, padding: 14, borderRadius: 10, background: "var(--monitor-panel)", border: "1px solid var(--monitor-line)" }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <ShieldCheck size={16} color="var(--monitor-blue)" />
-                          <strong style={{ fontSize: 13, color: "var(--monitor-text)" }}>
-                            Cloudflare 固定域名与隧道 (傻瓜式全自动托管)
-                          </strong>
-                        </div>
-                        <button
-                          className="service-action-btn"
-                          style={{ padding: "3px 9px", fontSize: 11 }}
-                          onClick={() => void invoke("open_url_in_browser", { url: "https://one.dash.cloudflare.com/" })}
-                        >
-                          <ExternalLink size={11} />
-                          打开 Cloudflare Zero Trust 控制台
-                        </button>
-                      </div>
-
-                      {/* Status row: cloudflared CLI & Windows System Service status */}
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "8px 12px", background: "var(--monitor-panel-soft)", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <span style={{ color: "var(--monitor-text-soft)" }}>cloudflared 运行时:</span>
-                          {tunnelInfo?.installed ? (
-                            <span style={{ color: "var(--monitor-green)", fontWeight: 600 }}>✅ 已安装就绪</span>
-                          ) : (
-                            <span style={{ color: "var(--monitor-red)", fontWeight: 600 }}>⚠️ 未安装</span>
-                          )}
-                          {!tunnelInfo?.installed && (
-                            <button
-                              className="service-action-btn start"
-                              style={{ padding: "2px 6px", fontSize: 10 }}
-                              disabled={cfCliInstalling}
-                              onClick={() => void handleInstallCloudflaredCli()}
-                            >
-                              <Zap size={11} />
-                              {cfCliInstalling ? "安装中…" : "一键安装运行时 (winget)"}
-                            </button>
-                          )}
-                        </div>
-
-                        <div style={{ width: 1, height: 16, background: "var(--monitor-line)" }} />
-
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <span style={{ color: "var(--monitor-text-soft)" }}>Windows 系统服务:</span>
-                          {cfServiceStatus?.installed ? (
-                            cfServiceStatus.status === "Running" ? (
-                              <span style={{ color: "var(--monitor-green)", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--monitor-green)", display: "inline-block" }} />
-                                运行中 (开机自启)
-                              </span>
-                            ) : (
-                              <span style={{ color: "var(--monitor-amber)", fontWeight: 600 }}>
-                                已安装 (当前状态: {cfServiceStatus.status})
-                              </span>
-                            )
-                          ) : (
-                            <span style={{ color: "var(--monitor-text-soft)" }}>未安装为系统服务</span>
-                          )}
-                        </div>
-
-                        {cfServiceStatus?.installed && (
-                          <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
-                            {cfServiceStatus.status === "Running" ? (
-                              <button
-                                className="service-action-btn stop"
-                                style={{ padding: "2px 6px", fontSize: 10 }}
-                                disabled={Boolean(cfServiceBusy)}
-                                onClick={() => void handleControlSystemService("stop")}
-                              >
-                                <Square size={10} /> 停止服务
-                              </button>
-                            ) : (
-                              <button
-                                className="service-action-btn start"
-                                style={{ padding: "2px 6px", fontSize: 10 }}
-                                disabled={Boolean(cfServiceBusy)}
-                                onClick={() => void handleControlSystemService("start")}
-                              >
-                                <Play size={10} /> 启动服务
-                              </button>
-                            )}
-                            <button
-                              className="service-action-btn"
-                              style={{ padding: "2px 6px", fontSize: 10 }}
-                              disabled={Boolean(cfServiceBusy)}
-                              onClick={() => void handleControlSystemService("restart")}
-                            >
-                              <RotateCw size={10} className={cfServiceBusy === "restart" ? "spinning" : ""} /> 重启服务
-                            </button>
-                            <button
-                              className="service-action-btn danger"
-                              style={{ padding: "2px 6px", fontSize: 10 }}
-                              disabled={Boolean(cfServiceBusy)}
-                              onClick={() => void handleUninstallSystemService()}
-                              title="卸载 Windows 系统服务"
-                            >
-                              <Trash2 size={10} /> 卸载服务
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Step 1: Tunnel Token */}
-                      <div style={{ marginBottom: 10 }}>
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                          <label style={{ fontSize: 12, fontWeight: 600, color: "var(--monitor-text)" }}>
-                            🔑 步骤 1：输入或粘贴 Cloudflare 隧道 Token（智能自动提取）
-                          </label>
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            {cloudflareTunnelTokenInput.includes("eyJ") && (
-                              <span style={{ fontSize: 11, color: "var(--monitor-green)", fontWeight: 600 }}>
-                                ✅ 已智能识别有效 Token
-                              </span>
-                            )}
-                            <button
-                              className="service-action-btn"
-                              style={{ padding: "2px 7px", fontSize: 11 }}
-                              onClick={() => void handlePasteTunnelToken()}
-                            >
-                              <Copy size={11} />
-                              粘贴剪贴板
-                            </button>
-                          </div>
-                        </div>
-                        <input
-                          type="text"
-                          className="monitor-endpoint-input"
-                          style={{ width: "100%", padding: "7px 10px", fontSize: 12, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
-                          placeholder="直接粘贴在 Cloudflare 网页中复制的命令（例如 cloudflared.exe service install eyJh...）或纯 Token"
-                          value={cloudflareTunnelTokenInput}
-                          onChange={(e) => setCloudflareTunnelTokenInput(e.target.value)}
-                        />
-                        <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 3 }}>
-                          💡 提示：在 Cloudflare Zero Trust 网页创建 Tunnel 后，直接复制其给出的整条命令或 Token 粘贴即可，系统会自动解析。
-                        </div>
-                      </div>
-
-                      {/* Step 2: Public Domain */}
-                      <div style={{ marginBottom: 12 }}>
-                        <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--monitor-text)", marginBottom: 4 }}>
-                          🌐 步骤 2：绑定的固定公网 Base URL（Public Hostname）
-                        </label>
-                        <input
-                          type="text"
-                          className="monitor-endpoint-input"
-                          style={{ width: "100%", padding: "7px 10px", fontSize: 12, background: "var(--monitor-bg)", border: "1px solid var(--monitor-line)" }}
-                          placeholder="例如: https://devspace.do3bvk.cn 或 https://webmcp.yourdomain.cn"
-                          value={customDomainInput}
-                          onChange={(e) => setCustomDomainInput(e.target.value)}
-                        />
-                        <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 3 }}>
-                          💡 提示：需在 Cloudflare 控制台中将此域名的 Public Hostname 指向 <code>http://127.0.0.1:7676</code>。
-                        </div>
-                      </div>
-
-                      {/* Step 3: Action buttons */}
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", paddingTop: 8, borderTop: "1px solid var(--monitor-line)" }}>
-                        <button
-                          className="service-action-btn start"
-                          style={{ padding: "6px 14px", fontSize: 12, fontWeight: 600 }}
-                          disabled={Boolean(cfServiceBusy)}
-                          onClick={() => void handleInstallSystemService()}
-                          title="自动提权运行 service install 并启动开机自启服务，同时保存公网域名配置"
-                        >
-                          <ShieldCheck size={14} />
-                          {cfServiceBusy === "installing" ? "正在自动提权安装中…" : "一键安装为系统服务（推荐・开机自启）"}
-                        </button>
-
-                        <button
-                          className="service-action-btn restart"
-                          style={{ padding: "6px 12px", fontSize: 12 }}
-                          disabled={Boolean(cfServiceBusy)}
-                          onClick={() => void handleStartNamedTunnel()}
-                          title="由 WebMCP 控制台随开随用，免管理员权限"
-                        >
-                          <Zap size={13} />
-                          {cfServiceBusy === "starting_named" ? "启动中…" : "免安装启动（托管模式・免提权）"}
-                        </button>
-
-                        <button
-                          className="service-action-btn"
-                          style={{ padding: "6px 10px", fontSize: 12, marginLeft: "auto" }}
-                          disabled={domainSaving}
-                          onClick={() => void handleSaveDomain()}
-                          title="仅保存公网域名到 config.json，不变更本地隧道"
-                        >
-                          {domainSaving ? "保存中…" : "仅保存域名配置"}
-                        </button>
-
-                        {webmcpConfig?.publicBaseUrl && (
-                          <button
-                            className="service-action-btn stop"
-                            style={{ padding: "6px 10px", fontSize: 12 }}
-                            disabled={domainSaving}
-                            onClick={() => void handleSaveDomain(null)}
-                            title="清除已配置的公网域名"
-                          >
-                            清除域名
-                          </button>
-                        )}
-                      </div>
-
-                      {cfServiceFeedback && (
-                        <div className="monitor-inline-error" style={{ background: "var(--monitor-panel-soft)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)", marginTop: 10 }}>
-                          {cfServiceFeedback}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
                   {domainFeedback && (
                     <div className="monitor-inline-error" style={{ background: "var(--monitor-panel-soft)", color: "var(--monitor-text)", border: "1px solid var(--monitor-line)", marginTop: 8 }}>
                       {domainFeedback}
@@ -3831,6 +4370,26 @@ function App() {
                         <TerminalSquare size={14} color="var(--monitor-blue)" />
                         <strong>cloudflared 实时日志</strong>
                         <span>PID: {tunnelInfo?.pid ?? "—"}</span>
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => void handleOpenLogsDir()}
+                          title="打开包含日志的本地文件夹"
+                        >
+                          <Folder size={11} />
+                          打开目录
+                        </button>
+                        <button
+                          className="service-action-btn"
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => void handleExportDiagnostic()}
+                          title="一键生成完整诊断报告（含隧道、配置与服务日志）并复制"
+                        >
+                          <Copy size={11} />
+                          复制诊断报告
+                        </button>
                       </div>
                     </header>
                     <pre
@@ -3856,7 +4415,7 @@ function App() {
 
                 <div className="monitor-info-list">
                   <div>
-                    <span>临时公网 Base URL</span>
+                    <span>当前生效公网 Base URL</span>
                     <code className="mono">{publicTunnelUrl || "未启动 (默认本地: 127.0.0.1:7676)"}</code>
                   </div>
                   <div>
@@ -3864,10 +4423,10 @@ function App() {
                     <code className="mono">http://127.0.0.1:7676</code>
                   </div>
                   <div>
-                    <span>cloudflared CLI 状态</span>
+                    <span>cloudflared CLI 运行环境</span>
                     <span style={{ fontSize: 11, color: "var(--monitor-text-soft)" }}>
                       {tunnelInfo?.installed
-                        ? "✅ 已安装 (支持一键初始化 TryCloudflare 免费临时隧道)"
+                        ? "✅ 已安装就绪 (支持系统服务与托管隧道)"
                         : "❌ 未检测到 cloudflared。可运行 `winget install --id Cloudflare.cloudflared` 安装"}
                     </span>
                   </div>
@@ -3988,9 +4547,9 @@ function App() {
                           onChange={(e) => setToolsPolicyDraft((prev) => ({ ...prev, checkpoint: e.target.checked }))}
                         />
                         <div>
-                          <strong>允许 checkpoint 状态落盘</strong>
+                          <strong>允许 checkpoint 状态保存</strong>
                           <div style={{ fontSize: 11, color: "var(--monitor-text-soft)", marginTop: 2 }}>
-                            当收到 <code>checkpoint</code> 指令时自动落盘至 <code>.webmcp/checkpoints/</code> 与 <code>CHECKPOINT.md</code>，绝不拒答。
+                            当收到 <code>checkpoint</code> 指令时自动持久化到 WebMCP 专属 SQLite 数据库中，不污染项目目录，绝不拒答。
                           </div>
                         </div>
                       </label>
@@ -4170,6 +4729,8 @@ function App() {
               onSave={saveSettings}
               onCleanup={cleanup}
               onClear={clear}
+              onOpenSqlite={handleOpenSqliteLocation}
+              onExportEvents={handleExportToolEvents}
             />
           )}
         </main>

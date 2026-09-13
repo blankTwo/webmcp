@@ -28,3 +28,8 @@ pnpm-debug.log*
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Local database & tooling metadata
+*.sqlite
+*.sqlite-journal
+.reasonix/

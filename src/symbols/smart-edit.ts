@@ -18,30 +18,39 @@ export interface SmartEditResult {
 }
 
 /**
- * Escape regex special characters except when .*? or .* is used as a wildcard
+ * Converts a pattern with optional `.*?` / `.*` wildcards and multiline text
+ * into a regex that tolerates minor whitespace and indentation variations.
  */
-function toRegexPattern(pattern: string): string {
-  // Replace .*? and .* with placeholders first
+function toSmartPattern(pattern: string): string {
   const nonGreedyPlaceholder = "___NON_GREEDY_WILDCARD___";
   const greedyPlaceholder = "___GREEDY_WILDCARD___";
 
-  let protectedPattern = pattern
+  const protectedPattern = pattern
     .split(".*?")
     .join(nonGreedyPlaceholder)
     .split(".*")
     .join(greedyPlaceholder);
 
-  // Escape special characters
-  protectedPattern = protectedPattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Split into chunks between wildcards
+  const parts = protectedPattern.split(/(___NON_GREEDY_WILDCARD___|___GREEDY_WILDCARD___)/);
 
-  // Restore wildcards as multiline matchers
-  protectedPattern = protectedPattern
-    .split(nonGreedyPlaceholder)
-    .join("[\\s\\S]*?")
-    .split(greedyPlaceholder)
-    .join("[\\s\\S]*");
+  const convertedParts = parts.map((part) => {
+    if (part === nonGreedyPlaceholder) return "[\\s\\S]*?";
+    if (part === greedyPlaceholder) return "[\\s\\S]*";
 
-  return protectedPattern;
+    // Split into lines for whitespace and indentation normalization
+    const lines = part.replace(/\r\n/g, "\n").split("\n");
+    const regexLines = lines.map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return "[ \\t]*";
+      const tokens = trimmed.split(/[ \t]+/);
+      const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      return "[ \\t]*" + escaped.join("[ \\t]+");
+    });
+    return regexLines.join("[ \\t]*\\r?\\n");
+  });
+
+  return convertedParts.join("");
 }
 
 /**
@@ -74,7 +83,7 @@ export async function applySmartEdit(
     const rawOld = edit.oldText;
     const rawNew = edit.newText;
 
-    // Try exact literal match first
+    // Step 1: Try exact literal match first
     const exactIndex = currentContent.indexOf(rawOld);
     if (exactIndex !== -1 && currentContent.indexOf(rawOld, exactIndex + 1) === -1) {
       currentContent =
@@ -82,7 +91,7 @@ export async function applySmartEdit(
       continue;
     }
 
-    // Try LF-normalized literal match (resolves CRLF mismatch)
+    // Step 2: Try LF-normalized literal match (resolves CRLF / LF line endings)
     const normalizedContent = currentContent.replace(/\r\n/g, "\n");
     const normalizedOld = rawOld.replace(/\r\n/g, "\n");
     const normIndex = normalizedContent.indexOf(normalizedOld);
@@ -98,9 +107,9 @@ export async function applySmartEdit(
       continue;
     }
 
-    // Try Regex non-greedy matching (supports .*?)
+    // Step 3: Try smart pattern match (handles .*? / .* wildcards + fuzzy whitespace/indentation)
     try {
-      const patternStr = toRegexPattern(normalizedOld);
+      const patternStr = toSmartPattern(normalizedOld);
       const regex = new RegExp(patternStr, "g");
       const matches = [...normalizedContent.matchAll(regex)];
 
@@ -125,20 +134,27 @@ export async function applySmartEdit(
           content: originalContent,
           additions: 0,
           removals: 0,
-          error: `Ambiguous pattern in edits[${i}]: matched ${matches.length} times in ${filePath}. Please provide more surrounding context to disambiguate.`,
+          error: `Ambiguous pattern in edits[${i}]: matched ${matches.length} different locations in ${filePath}. Each oldText must match a unique block. Please provide more surrounding lines/context to disambiguate, or use 'apply_patch'.`,
         };
       }
     } catch {
-      // Ignore regex compile errors and continue
+      // Ignore regex compile errors and fall through
     }
 
-    // Failed to match this edit
+    // Step 4: If still not matched, construct actionable diagnosis
+    const firstNonEmptyLine = rawOld.split("\n").map((l) => l.trim()).find((l) => l.length > 0) || "";
+    const partialFound = firstNonEmptyLine && currentContent.includes(firstNonEmptyLine);
+    let hint = "The specified text does not exist in the file.";
+    if (partialFound) {
+      hint = `Found partial line "${firstNonEmptyLine.slice(0, 50)}...", but surrounding lines or block content differed.`;
+    }
+
     return {
       success: false,
       content: originalContent,
       additions: 0,
       removals: 0,
-      error: `Could not find edits[${i}] in ${filePath}. Text must match uniquely (or use '.*?' wildcard for non-greedy block replacement).`,
+      error: `Could not find edits[${i}] in ${filePath}. ${hint} Tip: You can use '.*?' wildcards to bridge variable/dynamic text, or call 'read' on ${filePath} to check the latest content before editing. For complex multi-part changes, prefer 'apply_patch'.`,
     };
   }
 

@@ -1118,6 +1118,493 @@ async fn start_cloudflared_named_tunnel(token: String) -> Result<CloudflaredTunn
     })
 }
 
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudflareLoginStatus {
+    logged_in: bool,
+    account_id: Option<String>,
+    zone_id: Option<String>,
+    has_api_token: bool,
+    cert_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudflareZoneItem {
+    id: String,
+    name: String,
+    status: String,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudflareAutoSetupResult {
+    ok: bool,
+    domain: String,
+    full_endpoint: String,
+    tunnel_id: String,
+    message: String,
+}
+
+struct CloudflareCertToken {
+    account_id: String,
+    api_token: String,
+    zone_id: String,
+    cert_path: PathBuf,
+}
+
+fn get_cloudflare_cert_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")).map(PathBuf::from) {
+        paths.push(home.join(".cloudflared").join("cert.pem"));
+        paths.push(home.join(".webmcp").join("cert.pem"));
+    }
+    paths
+}
+
+fn parse_cloudflare_cert() -> Option<CloudflareCertToken> {
+    use base64::Engine;
+    for path in get_cloudflare_cert_paths() {
+        if !path.is_file() {
+            continue;
+        }
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Some(start_idx) = content.find("-----BEGIN ARGO TUNNEL TOKEN-----") {
+                let rest = &content[start_idx + 33..];
+                if let Some(end_idx) = rest.find("-----END ARGO TUNNEL TOKEN-----") {
+                    let b64 = rest[..end_idx].replace(|c: char| c.is_whitespace(), "");
+                    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()) {
+                        if let Ok(val) = serde_json::from_slice::<Value>(&decoded) {
+                            let account_id = val.get("accountID").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                            let api_token = val.get("apiToken").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                            let zone_id = val.get("zoneID").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                            if !account_id.is_empty() && !api_token.is_empty() {
+                                return Some(CloudflareCertToken {
+                                    account_id,
+                                    api_token,
+                                    zone_id,
+                                    cert_path: path,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn regex_find_uuid(s: &str) -> Option<String> {
+    for part in s.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
+        let trimmed = part.trim();
+        if trimmed.len() == 36 {
+            let parts: Vec<&str> = trimmed.split('-').collect();
+            if parts.len() == 5 
+                && parts[0].len() == 8 
+                && parts[1].len() == 4 
+                && parts[2].len() == 4 
+                && parts[3].len() == 4 
+                && parts[4].len() == 12 
+                && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_hexdigit())) {
+                return Some(trimmed.to_lowercase());
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+async fn get_cloudflare_login_status() -> Result<CloudflareLoginStatus, String> {
+    if let Some(token) = parse_cloudflare_cert() {
+        Ok(CloudflareLoginStatus {
+            logged_in: true,
+            account_id: Some(token.account_id),
+            zone_id: if token.zone_id.is_empty() { None } else { Some(token.zone_id) },
+            has_api_token: !token.api_token.is_empty(),
+            cert_path: Some(token.cert_path.to_string_lossy().to_string()),
+        })
+    } else {
+        Ok(CloudflareLoginStatus {
+            logged_in: false,
+            account_id: None,
+            zone_id: None,
+            has_api_token: false,
+            cert_path: None,
+        })
+    }
+}
+
+#[tauri::command]
+async fn start_cloudflare_login(force: Option<bool>) -> Result<CloudflareLoginStatus, String> {
+    if !is_cloudflared_installed() {
+        return Err("未检测到 cloudflared CLI。请先点击安装 cloudflared 运行时。".to_string());
+    }
+
+    if force != Some(true) {
+        if let Some(token) = parse_cloudflare_cert() {
+            return Ok(CloudflareLoginStatus {
+                logged_in: true,
+                account_id: Some(token.account_id),
+                zone_id: if token.zone_id.is_empty() { None } else { Some(token.zone_id) },
+                has_api_token: true,
+                cert_path: Some(token.cert_path.to_string_lossy().to_string()),
+            });
+        }
+    }
+
+    push_service_log("🌐 正在启动 cloudflared login 并唤起浏览器完成 Cloudflare 授权...");
+
+    let mut cmd = std::process::Command::new("cloudflared");
+    cmd.arg("login")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| format!("启动 cloudflared login 失败: {e}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let browser_opened = Arc::new(Mutex::new(false));
+
+    let scan_and_open = |line: &str, opened_flag: Arc<Mutex<bool>>| {
+        if let Some(start) = line.find("https://dash.cloudflare.com/argotunnel") {
+            let url = line[start..].split_whitespace().next().unwrap_or("").trim().to_string();
+            if !url.is_empty() {
+                if let Ok(mut opened) = opened_flag.lock() {
+                    if !*opened {
+                        *opened = true;
+                        let _ = open_url_in_browser(url);
+                    }
+                }
+            }
+        }
+    };
+
+    if let Some(out) = stdout {
+        let flag = browser_opened.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(out);
+            for line in reader.lines().map_while(Result::ok) {
+                scan_and_open(&line, flag.clone());
+            }
+        });
+    }
+
+    if let Some(err) = stderr {
+        let flag = browser_opened.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(err);
+            for line in reader.lines().map_while(Result::ok) {
+                scan_and_open(&line, flag.clone());
+            }
+        });
+    }
+
+    // Wait up to 180 seconds for cert.pem
+    for _ in 0..180 {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        if let Some(token) = parse_cloudflare_cert() {
+            if let Some(home) = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")).map(PathBuf::from) {
+                let _ = fs::create_dir_all(home.join(".webmcp"));
+                let webmcp_cert = home.join(".webmcp").join("cert.pem");
+                let _ = fs::copy(&token.cert_path, &webmcp_cert);
+            }
+            push_service_log("✅ Cloudflare 浏览器授权成功，已成功捕获证书凭据！");
+            let _ = child.kill();
+            return Ok(CloudflareLoginStatus {
+                logged_in: true,
+                account_id: Some(token.account_id),
+                zone_id: if token.zone_id.is_empty() { None } else { Some(token.zone_id) },
+                has_api_token: true,
+                cert_path: Some(token.cert_path.to_string_lossy().to_string()),
+            });
+        }
+        if let Ok(Some(_)) = child.try_wait() {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+            if let Some(token) = parse_cloudflare_cert() {
+                return Ok(CloudflareLoginStatus {
+                    logged_in: true,
+                    account_id: Some(token.account_id),
+                    zone_id: if token.zone_id.is_empty() { None } else { Some(token.zone_id) },
+                    has_api_token: true,
+                    cert_path: Some(token.cert_path.to_string_lossy().to_string()),
+                });
+            }
+            break;
+        }
+    }
+
+    let _ = child.kill();
+    if let Some(token) = parse_cloudflare_cert() {
+        Ok(CloudflareLoginStatus {
+            logged_in: true,
+            account_id: Some(token.account_id),
+            zone_id: if token.zone_id.is_empty() { None } else { Some(token.zone_id) },
+            has_api_token: true,
+            cert_path: Some(token.cert_path.to_string_lossy().to_string()),
+        })
+    } else {
+        Err("Cloudflare 浏览器授权超时或未在网页完成点击授权，请重试。".to_string())
+    }
+}
+
+#[tauri::command]
+async fn get_cloudflare_zones() -> Result<Vec<CloudflareZoneItem>, String> {
+    let token = parse_cloudflare_cert().ok_or_else(|| "未检测到有效 Cloudflare 授权凭据，请先在步骤 1 点击「打开浏览器授权」".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("构建 HTTP 请求失败: {e}"))?;
+
+    let resp = client
+        .get("https://api.cloudflare.com/client/v4/zones?per_page=50")
+        .header("Authorization", format!("Bearer {}", token.api_token))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("连接 Cloudflare 官方 API 失败: {e}"))?;
+
+    let body = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let val: Value = serde_json::from_str(&body).map_err(|e| format!("解析响应失败: {e}"))?;
+
+    if val.get("success").and_then(Value::as_bool) != Some(true) {
+        let err_msg = val.get("errors").and_then(Value::as_array)
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("读取域名列表失败");
+        return Err(format!("Cloudflare API 错误: {err_msg}"));
+    }
+
+    let mut zones = Vec::new();
+    if let Some(arr) = val.get("result").and_then(Value::as_array) {
+        for z in arr {
+            if let (Some(id), Some(name)) = (z.get("id").and_then(Value::as_str), z.get("name").and_then(Value::as_str)) {
+                let status = z.get("status").and_then(Value::as_str).unwrap_or("active").to_string();
+                zones.push(CloudflareZoneItem {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    status,
+                });
+            }
+        }
+    }
+
+    Ok(zones)
+}
+
+#[tauri::command]
+async fn setup_cloudflare_auto_tunnel(
+    zone_id: String,
+    zone_name: String,
+    subdomain: String,
+    mode: String,
+) -> Result<CloudflareAutoSetupResult, String> {
+    let token = parse_cloudflare_cert().ok_or_else(|| "未找到有效 Cloudflare 授权凭据，请先在步骤 1 点击授权".to_string())?;
+
+    let clean_sub = subdomain.trim().trim_matches('.').to_string();
+    let clean_zone = zone_name.trim().trim_matches('.').to_string();
+    if clean_sub.is_empty() || clean_zone.is_empty() {
+        return Err("二级前缀和主域名不能为空".to_string());
+    }
+    let target_hostname = format!("{clean_sub}.{clean_zone}");
+    push_service_log(format!("🚀 开始全自动配置专属域名隧道: {target_hostname} (模式: {mode})..."));
+
+    let home = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")).map(PathBuf::from)
+        .ok_or_else(|| "无法获取用户主目录".to_string())?;
+    let cloudflared_dir = home.join(".cloudflared");
+    let _ = fs::create_dir_all(&cloudflared_dir);
+
+    // 1. Check existing tunnel or create new tunnel
+    push_service_log("📦 [1/5] 检查或创建 Cloudflare Tunnel 隧道...");
+    let tunnel_base_name = format!("webmcp-{}", clean_sub);
+    let mut tid: Option<String> = None;
+
+    if let Ok(entries) = fs::read_dir(&cloudflared_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if let Some(uuid_str) = regex_find_uuid(file_stem) {
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                                if val.get("TunnelID").and_then(Value::as_str) == Some(&uuid_str) {
+                                    tid = Some(uuid_str);
+                                    push_service_log(format!("ℹ️ 找到本机已有隧道凭据: {}", tid.as_ref().unwrap()));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let tunnel_id = match tid {
+        Some(id) => id,
+        None => {
+            let create_name = format!("{}-{}", tunnel_base_name, &chrono::Local::now().format("%m%d%H%M"));
+            let mut create_cmd = std::process::Command::new("cloudflared");
+            create_cmd.args(["tunnel", "create", &create_name]);
+            #[cfg(windows)]
+            {
+                create_cmd.creation_flags(0x08000000);
+            }
+            let out = create_cmd.output().map_err(|e| format!("执行 cloudflared tunnel create 失败: {e}"))?;
+            let combined = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            let new_uuid = regex_find_uuid(&combined).ok_or_else(|| format!("创建隧道失败: {combined}"))?;
+            push_service_log(format!("✅ 新隧道创建成功: {new_uuid}"));
+            new_uuid
+        }
+    };
+
+    let creds_file = cloudflared_dir.join(format!("{tunnel_id}.json"));
+    if !creds_file.is_file() {
+        return Err(format!("未找到隧道凭据文件: {}", creds_file.display()));
+    }
+
+    // 2. DNS CNAME upsert via Cloudflare API
+    push_service_log(format!("🌐 [2/5] 正在配置 Cloudflare DNS: {target_hostname} ➔ {tunnel_id}.cfargotunnel.com..."));
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
+    let cname_target = format!("{tunnel_id}.cfargotunnel.com");
+
+    let dns_search_url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?name={target_hostname}");
+    let dns_resp = client
+        .get(&dns_search_url)
+        .header("Authorization", format!("Bearer {}", token.api_token))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("查询 Cloudflare DNS 失败: {e}"))?;
+    let dns_body: Value = dns_resp.json().await.map_err(|e| format!("解析 DNS 查询失败: {e}"))?;
+
+    let existing_records = dns_body.get("result").and_then(Value::as_array);
+    let mut record_updated = false;
+
+    if let Some(records) = existing_records {
+        for r in records {
+            if let Some(rid) = r.get("id").and_then(Value::as_str) {
+                let put_url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{rid}");
+                let put_resp = client
+                    .put(&put_url)
+                    .header("Authorization", format!("Bearer {}", token.api_token))
+                    .json(&serde_json::json!({
+                        "type": "CNAME",
+                        "name": target_hostname,
+                        "content": cname_target,
+                        "ttl": 1,
+                        "proxied": true
+                    }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("更新 DNS 记录失败: {e}"))?;
+                if put_resp.status().is_success() {
+                    record_updated = true;
+                    push_service_log(format!("✅ 成功更新已存在的 DNS 解析 ➔ {cname_target} (已开启 CDN 代理)"));
+                    break;
+                }
+            }
+        }
+    }
+
+    if !record_updated {
+        let post_url = format!("https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records");
+        let post_resp = client
+            .post(&post_url)
+            .header("Authorization", format!("Bearer {}", token.api_token))
+            .json(&serde_json::json!({
+                "type": "CNAME",
+                "name": target_hostname,
+                "content": cname_target,
+                "ttl": 1,
+                "proxied": true
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("写入 DNS 记录失败: {e}"))?;
+        let post_val: Value = post_resp.json().await.unwrap_or_default();
+        if post_val.get("success").and_then(Value::as_bool) != Some(true) {
+            let err = post_val.get("errors").and_then(Value::as_array)
+                .and_then(|a| a.first()).and_then(|o| o.get("message")).and_then(Value::as_str)
+                .unwrap_or("DNS 创建失败");
+            return Err(format!("Cloudflare DNS 配置失败: {err}"));
+        }
+        push_service_log(format!("✅ 成功新建 DNS CNAME 解析: {target_hostname} ➔ {cname_target} (已开启 CDN 代理)"));
+    }
+
+    // 3. Write config.yml
+    push_service_log("📝 [3/5] 写入本地 cloudflared 路由配置指向 http://127.0.0.1:7676...");
+    let creds_posix = creds_file.to_string_lossy().replace('\\', "/");
+    let yml_content = format!(
+        "tunnel: {tunnel_id}\ncredentials-file: {creds_posix}\n\ningress:\n  - hostname: {target_hostname}\n    service: http://127.0.0.1:7676\n  - service: http_status:404\n"
+    );
+    let config_yml_path = cloudflared_dir.join("config.yml");
+    let _ = fs::write(&config_yml_path, &yml_content);
+    let webmcp_dir = home.join(".webmcp");
+    let _ = fs::create_dir_all(&webmcp_dir);
+    let _ = fs::write(webmcp_dir.join("cloudflared.yml"), &yml_content);
+
+    // 4. Update WebMCP config & restart service
+    push_service_log("🔄 [4/5] 同步 WebMCP 域名白名单与 OAuth 签名并平滑重启服务...");
+    let target_public_url = format!("https://{target_hostname}");
+    let _ = set_webmcp_public_url(Some(target_public_url.clone()), None).await;
+
+    // 5. Start tunnel
+    push_service_log(format!("⚡ [5/5] 启动 Cloudflare 隧道 (方式: {mode})..."));
+    let _ = stop_cloudflared_tunnel().await;
+
+    if mode == "service" {
+        push_service_log("正在以 Windows 系统服务方式安装并启动...");
+        let _ = std::process::Command::new("cloudflared")
+            .args(["service", "uninstall"])
+            .output();
+        let _ = std::process::Command::new("cloudflared")
+            .args(["--config", &config_yml_path.to_string_lossy(), "service", "install"])
+            .output();
+        let _ = control_cloudflared_system_service("restart".to_string()).await;
+    } else {
+        // Managed process mode
+        let mut cmd = std::process::Command::new("cloudflared");
+        cmd.args(["--config", &config_yml_path.to_string_lossy(), "tunnel", "run", &tunnel_id])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(0x08000000);
+        }
+        let child = cmd.spawn().map_err(|e| format!("启动托管隧道失败: {e}"))?;
+        let pid = child.id();
+        {
+            if let Ok(mut guard) = MANAGED_TUNNEL.lock() {
+                *guard = Some(TunnelState {
+                    child: Some(child),
+                    url: Some(target_public_url.clone()),
+                    logs: Vec::new(),
+                    error: None,
+                });
+            }
+        }
+        push_service_log(format!("✅ 托管隧道进程已启动 (PID: {pid})"));
+    }
+
+    let full_endpoint = format!("{target_public_url}/mcp");
+    push_service_log(format!("🎉 全自动配置圆满成功！ChatGPT MCP 专属端点: {full_endpoint}"));
+
+    Ok(CloudflareAutoSetupResult {
+        ok: true,
+        domain: target_hostname,
+        full_endpoint,
+        tunnel_id,
+        message: "固定域名已全自动配置成功并上线！".to_string(),
+    })
+}
+
 #[tauri::command]
 async fn proxy_webmcp_api(method: String, path: String, body: Option<Value>) -> Result<Value, String> {
     if !path.starts_with("/console/") && path != "/statusz" && path != "/statusz/optimizer" {
@@ -1724,6 +2211,204 @@ async fn open_url_in_browser(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_logs_directory() -> Result<(), String> {
+    let log_file = get_log_file_path()?;
+    let logs_dir = log_file.parent().ok_or_else(|| "无法获取日志目录".to_string())?;
+    
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(logs_dir)
+            .spawn()
+            .map_err(|e| format!("打开日志目录失败: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg(logs_dir)
+            .spawn()
+            .map_err(|e| format!("打开日志目录失败: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open")
+            .arg(logs_dir)
+            .spawn()
+            .map_err(|e| format!("打开日志目录失败: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_sqlite_location(path: Option<String>) -> Result<(), String> {
+    let sqlite_path = if let Some(p) = path.filter(|s| !s.trim().is_empty()) {
+        PathBuf::from(p)
+    } else {
+        let home = env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| "无法获取用户主目录".to_string())?;
+        let p1 = home.join(".local").join("share").join("webmcp").join("webmcp.sqlite");
+        if p1.exists() {
+            p1
+        } else {
+            let p2 = home.join(".webmcp").join("webmcp.sqlite");
+            if p2.exists() {
+                p2
+            } else {
+                p1
+            }
+        }
+    };
+
+    #[cfg(windows)]
+    {
+        if sqlite_path.exists() {
+            // Windows explorer /select,"<path>" directly selects and highlights the file!
+            let _ = std::process::Command::new("explorer")
+                .arg(format!("/select,{}", sqlite_path.display()))
+                .spawn()
+                .map_err(|e| format!("打开 SQLite 文件目录失败: {e}"))?;
+        } else if let Some(parent) = sqlite_path.parent() {
+            let _ = fs::create_dir_all(parent);
+            let _ = std::process::Command::new("explorer")
+                .arg(parent)
+                .spawn()
+                .map_err(|e| format!("打开目录失败: {e}"))?;
+        } else {
+            return Err("未找到 SQLite 文件路径".to_string());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if sqlite_path.exists() {
+            let _ = std::process::Command::new("open")
+                .arg("-R")
+                .arg(&sqlite_path)
+                .spawn()
+                .map_err(|e| format!("定位 SQLite 文件失败: {e}"))?;
+        } else if let Some(parent) = sqlite_path.parent() {
+            let _ = fs::create_dir_all(parent);
+            let _ = std::process::Command::new("open")
+                .arg(parent)
+                .spawn()
+                .map_err(|e| format!("打开目录失败: {e}"))?;
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let parent = sqlite_path.parent().unwrap_or(&sqlite_path);
+        let _ = fs::create_dir_all(parent);
+        let _ = std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("打开目录失败: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn export_diagnostic_report() -> Result<String, String> {
+    let mut report = String::new();
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    report.push_str(&format!("=== WebMCP 诊断报告 (生成时间: {now}) ===\n\n"));
+
+    // 1. WebMCP Configuration
+    if let Ok(dirs) = config_directories() {
+        if let Some(dir) = dirs.into_iter().next() {
+            let cfg_path = dir.join("config.json");
+            if let Ok(content) = fs::read_to_string(&cfg_path) {
+                report.push_str(&format!("--- [1. WebMCP 配置: {}] ---\n{}\n\n", cfg_path.display(), content));
+            }
+        }
+    }
+
+    // 2. WebMCP Core Server Logs (last 100 lines)
+    if let Ok(log_path) = get_log_file_path() {
+        if log_path.is_file() {
+            if let Ok(content) = fs::read_to_string(&log_path) {
+                let lines: Vec<&str> = content.lines().collect();
+                let start = if lines.len() > 120 { lines.len() - 120 } else { 0 };
+                let tail = lines[start..].join("\n");
+                report.push_str(&format!("--- [2. 核心服务运行与工具调用日志 (最后 {} 行)] ---\n{}\n\n", lines.len() - start, tail));
+            }
+        }
+    }
+
+    // 3. Console In-Memory Service Logs
+    if let Ok(srv_logs) = SERVICE_LOGS.lock() {
+        report.push_str(&format!("--- [3. 控制台服务生命周期日志 (最近 {} 条)] ---\n{}\n\n", srv_logs.len(), srv_logs.join("\n")));
+    }
+
+    // 4. Cloudflared Tunnel Logs
+    if let Ok(tunnel_guard) = MANAGED_TUNNEL.lock() {
+        if let Some(tunnel) = tunnel_guard.as_ref() {
+            report.push_str(&format!("--- [4. 托管隧道运行日志 (URL: {:?})] ---\n{}\n\n", tunnel.url, tunnel.logs.join("\n")));
+        }
+    }
+
+    // 5. WebMCP Local SQLite Database status
+    let sqlite_path = (|| -> Option<PathBuf> {
+        let home = env::var_os("USERPROFILE")
+            .or_else(|| env::var_os("HOME"))
+            .map(PathBuf::from)?;
+        let p1 = home.join(".local").join("share").join("webmcp").join("webmcp.sqlite");
+        if p1.exists() {
+            Some(p1)
+        } else {
+            let p2 = home.join(".webmcp").join("webmcp.sqlite");
+            if p2.exists() { Some(p2) } else { Some(p1) }
+        }
+    })();
+
+    if let Some(ref path) = sqlite_path {
+        report.push_str(&format!("--- [5. WebMCP 本地 SQLite 数据库: {}] ---\n", path.display()));
+        if path.exists() {
+            if let Ok(meta) = fs::metadata(path) {
+                report.push_str(&format!("文件状态: 存在 | 文件大小: {:.2} MB ({} 字节)\n", meta.len() as f64 / 1024.0 / 1024.0, meta.len()));
+            }
+        } else {
+            report.push_str("文件状态: 数据库文件尚不存在\n");
+        }
+        report.push_str("\n");
+    }
+
+    // 6. Recent MCP Tool Failures from snapshot
+    if let Ok(snapshot_val) = proxy_webmcp_api("GET".to_string(), "/console/snapshot?limit=100".to_string(), None).await {
+        if let Some(events) = snapshot_val.get("events").and_then(|v| v.as_array()) {
+            let mut failed_events = Vec::new();
+            for ev in events {
+                let success = ev.get("success").and_then(|s| s.as_bool()).unwrap_or(true);
+                let has_err = ev.get("error").and_then(|e| e.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+                if !success || has_err {
+                    failed_events.push(ev);
+                }
+            }
+            if !failed_events.is_empty() {
+                report.push_str(&format!("--- [6. 最近 MCP 工具执行异常汇总 (最近 {} 项异常)] ---\n", failed_events.len()));
+                for ev in failed_events.iter().take(25) {
+                    let ts = ev.get("timestamp").and_then(|v| v.as_str()).unwrap_or("—");
+                    let tool = ev.get("tool").and_then(|v| v.as_str()).unwrap_or("—");
+                    let error = ev.get("error").and_then(|v| v.as_str()).unwrap_or("未捕获具体错误信息");
+                    let cmd = ev.get("commandPreview").and_then(|v| v.as_str()).unwrap_or("");
+                    let path_str = ev.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    report.push_str(&format!("[{ts}] 工具: {tool} | 错误: {error}\n"));
+                    if !cmd.is_empty() {
+                        report.push_str(&format!("      命令行: {cmd}\n"));
+                    }
+                    if !path_str.is_empty() {
+                        report.push_str(&format!("      路径: {path_str}\n"));
+                    }
+                }
+                report.push_str("\n");
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+#[tauri::command]
 async fn exit_app(app_handle: tauri::AppHandle, stop_service: bool) -> Result<(), String> {
     if stop_service {
         let _ = stop_webmcp_service().await;
@@ -1848,11 +2533,18 @@ pub fn run() {
             control_cloudflared_system_service,
             install_cloudflared_cli,
             start_cloudflared_named_tunnel,
+            get_cloudflare_login_status,
+            start_cloudflare_login,
+            get_cloudflare_zones,
+            setup_cloudflare_auto_tunnel,
             select_folder_dialog,
             toggle_float_ball,
             is_float_ball_visible,
             show_main_window,
             open_url_in_browser,
+            open_logs_directory,
+            open_sqlite_location,
+            export_diagnostic_report,
             exit_app
         ])
         .run(tauri::generate_context!())

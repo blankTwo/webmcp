@@ -3674,3 +3674,234 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ==========================================================================
+   Tunnel Mode Switcher & Method Comparison Cards
+   ========================================================================== */
+.tunnel-mode-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  background: var(--monitor-panel-soft);
+  border-radius: 10px;
+  border: 1px solid var(--monitor-line);
+}
+
+.tunnel-mode-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--monitor-text-soft);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.tunnel-mode-tab:hover {
+  color: var(--monitor-text);
+  background: var(--monitor-panel-hover);
+}
+
+.tunnel-mode-tab.active {
+  background: var(--monitor-panel);
+  color: var(--monitor-blue);
+  border-color: var(--monitor-line-strong);
+  box-shadow: var(--monitor-shadow-sm);
+}
+
+.tunnel-method-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.tunnel-method-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--monitor-bg);
+  border: 1px solid var(--monitor-line);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.tunnel-method-card.recommended {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.04) 0%, var(--monitor-bg) 100%);
+}
+
+.tunnel-method-card:hover {
+  border-color: var(--monitor-line-strong);
+}
+
+.tunnel-method-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tunnel-method-badge.blue {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.tunnel-method-badge.amber {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.tunnel-method-badge.green {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+/* Auto Wizard Cloudflare Styles */
+.auto-wizard-step {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--monitor-line);
+}
+
+.auto-wizard-step:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.auto-wizard-step-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--monitor-text);
+}
+
+.auto-wizard-auth-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--monitor-panel);
+  border: 1px solid var(--monitor-line);
+  gap: 12px;
+}
+
+.auto-wizard-auth-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffffff;
+  background: linear-gradient(135deg, #f38020 0%, #faad3f 100%);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(243, 128, 32, 0.3);
+  transition: all 0.2s ease;
+}
+
+.auto-wizard-auth-btn:hover:not(:disabled) {
+  opacity: 0.92;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(243, 128, 32, 0.4);
+}
+
+.auto-wizard-auth-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.auto-wizard-domain-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .auto-wizard-domain-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.auto-wizard-select {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--monitor-text);
+  background: var(--monitor-bg);
+  border: 1px solid var(--monitor-line);
+  outline: none;
+  cursor: pointer;
+}
+
+.auto-wizard-select:focus {
+  border-color: var(--monitor-blue);
+}
+
+.auto-wizard-preview-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--monitor-panel);
+  border: 1px dashed var(--monitor-blue);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.auto-wizard-launch-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+  transition: all 0.2s ease;
+}
+
+.auto-wizard-launch-btn:hover:not(:disabled) {
+  opacity: 0.93;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.45);
+}
+
+.auto-wizard-launch-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+

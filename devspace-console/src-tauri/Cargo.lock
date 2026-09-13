@@ -4293,8 +4293,9 @@ dependencies = [
 
 [[package]]
 name = "webmcp-console"
-version = "1.0.0"
+version = "1.0.23"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "reqwest 0.12.28",
  "serde",
